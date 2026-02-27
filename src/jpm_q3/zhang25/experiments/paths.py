@@ -46,4 +46,4 @@ def results_dir(out_dir: str | Path | None = None) -> Path:
 def figures_dir(out_dir: str | Path | None = None) -> Path:
     d = results_dir(out_dir) / "figures"
     d.mkdir(parents=True, exist_ok=True)
-    return dc
+    return d

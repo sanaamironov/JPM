@@ -180,7 +180,7 @@ def run_blp(markets, cfg: SimConfig, iv_type: str):
 
 
 def run_shrinkage(markets, study: StudyConfig, cfg: SimConfig):
-    # estimate_shrinkage_sigma returns (sigma_hat, beta_hat, score, gamma_prob)
+    # returns either 4-tuple or 5-tuple if return_extras=True
     return estimate_shrinkage_sigma(
         markets,
         R=cfg.R0,
@@ -188,8 +188,8 @@ def run_shrinkage(markets, study: StudyConfig, cfg: SimConfig):
         burn=study.shrink_burn,
         v0=study.shrink_v0,
         v1=study.shrink_v1,
+        return_extras=True,
     )
-
 
 def run_lu25_map(markets, study: StudyConfig, cfg: SimConfig, rep_seed: int):
     if not HAS_LU25_MAP:
@@ -266,12 +266,24 @@ def run_cell(
 
         # 3) Shrinkage
         try:
-            sigma_s, beta_s, _score, gamma_prob = run_shrinkage(markets, study, cfg)
+            ret = run_shrinkage(markets, study, cfg)
+
+            if len(ret) == 4:
+                sigma_s, beta_s, _score, gamma_prob = ret
+                extras = {}
+            else:
+                sigma_s, beta_s, _score, gamma_prob, extras = ret
+
             shrink["sigma"][r] = float(sigma_s)
             shrink["beta_p"][r] = float(beta_s[1])
             shrink["beta_w"][r] = float(beta_s[2])
             if gamma_prob is not None:
                 shrink_gamma_list.append(np.asarray(gamma_prob))
+
+            acc = extras.get("acc_rate", None)
+            if acc is not None and study.R_mc <= 5:
+                print(f"  [shrinkage] acc_rate={acc:.3f}")
+
         except Exception as e:
             shrink["fail"][r] = 1
             _warn_exception(f"Shrinkage failed (rep={r}, seed={rep_seed})", e)

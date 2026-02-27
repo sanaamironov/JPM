@@ -1,3 +1,22 @@
+
+Cleaing this up 
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest -q
+jpmq3-replicate-lu25 --smoke
+jpmq3-run-all --smoke
+```
+
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest -q
+
+
+
 # Question 3 – Discrete Choice Models for Credit Card Offers
 
 This directory contains the solution for **Question 3**, split into two parts.
