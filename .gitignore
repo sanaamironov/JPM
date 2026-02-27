@@ -1,0 +1,76 @@
+# ----------------------------
+# OS / Editor junk
+# ----------------------------
+.DS_Store
+__MACOSX/
+Thumbs.db
+.vscode/
+.idea/
+
+# ----------------------------
+# Python bytecode / caches
+# ----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.cache/
+
+# ----------------------------
+# Virtual environments
+# ----------------------------
+.venv/
+venv/
+ENV/
+env/
+
+# ----------------------------
+# Packaging / build artifacts
+# ----------------------------
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# ----------------------------
+# Notebooks (optional)
+# ----------------------------
+.ipynb_checkpoints/
+
+# ----------------------------
+# Local results / generated outputs
+# ----------------------------
+results/
+results_final/    # delete this line if you DO want to commit curated outputs
+outputs/
+logs/
+
+# ----------------------------
+# Data (optional - keep only if you don't want data in git)
+# ----------------------------
+data/
+*.csv
+*.parquet
+*.pkl
+
+# ----------------------------
+# TensorFlow / TFP artifacts
+# ----------------------------
+**/tfevents.*
+**/events.out.tfevents.*
+**/checkpoint
+**/checkpoint.*
+**/*.ckpt
+**/saved_model/
+**/tensorboard/
+
+# ----------------------------
+# macOS Python package metadata / temp files
+# ----------------------------
+*.swp
+*.swo
