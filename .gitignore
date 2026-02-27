@@ -11,6 +11,7 @@ Thumbs.db
 # Python bytecode / caches
 # ----------------------------
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
@@ -19,6 +20,7 @@ __pycache__/
 .coverage
 htmlcov/
 .cache/
+
 
 # ----------------------------
 # Virtual environments
