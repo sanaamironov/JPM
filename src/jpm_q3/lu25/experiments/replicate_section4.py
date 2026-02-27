@@ -1,50 +1,25 @@
-"""run_replication_study.py
+"""
+replicate_section4.py
 
-Paper-aligned + repo-consistent replication driver for Lu & Shimizu (2025) Section 4.
+Paper-aligned replication driver for Lu(25) simulation study (Section 4).
 
-What this script does
----------------------
-Uses THIS REPO'S implementation (simulation + estimators) to run the Monte Carlo study
-and produce Table-1-style summaries.
+Design goals:
+- Package-safe: no sys.path hacks
+- Reproducible: seeded runs, explicit outputs
+- Reviewer-friendly: one entrypoint, explicit --out, smoke mode
+- Optional CPU-only mode for deterministic behavior on macOS Metal
 
-It runs the benchmark estimators used in the simulation section:
-  1) BLP + Cost IV (valid instruments)
-  2) BLP − Cost IV (weak instruments)
-  3) Shrinkage (Bayesian-style sparsity estimator implemented in this repo)
-Optionally (if present in the repo):
-  4) Lu25 MAP (likelihood-based, sparse shocks, no inversion)
-
-Paper alignment principles
---------------------------
-- Uses SimConfig from replication_lu25/simulation/config.py as the single source of truth
-  for: true parameters, market size N_t (cfg.Nt), integration draws (cfg.R0), sparsity fraction, etc.
-- Uses simulate_dataset(...) from replication_lu25/simulation/simulate.py.
-- Uses estimate_blp_sigma / estimate_shrinkage_sigma / estimate_lu25_map from replication_lu25/estimators.
-
-Outputs
--------
-- Console output is also logged to results/.
-- A CSV summary table is saved for downstream LaTeX table construction.
-
-How to run
-----------
-From the repo root:
-    python replication_lu25/run_replication_study.py
-
-You can edit DEFAULT_GRID below to match Table 1 exactly.
-
-Notes
------
-This file intentionally avoids re-implementing BLP or shrinkage logic.
-If results differ from the paper, the right place to investigate is:
-  - simulation/config.py (DGP and parameter settings)
-  - simulation/simulate.py (data generation)
-  - estimators/blp.py, estimators/shrinkage.py (estimation routines)
+Typical usage (from repo root, after `pip install -e ".[dev]"`):
+    python -m jpm_q3.lu25.experiments.replicate_section4 --smoke --out results/part2/smoke
+    python -m jpm_q3.lu25.experiments.replicate_section4 --cpu --grid DGP1:25:15 --R-mc 10 --out results/part2/dev
 """
 
 from __future__ import annotations
 
-import sys
+import argparse
+import json
+import os
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -52,114 +27,38 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-HERE = Path(__file__).resolve()
+from ..estimators.blp import estimate_blp_sigma
+from ..estimators.shrinkage import estimate_shrinkage_sigma
+from ..simulation.config import SimConfig
+from ..simulation.simulate import simulate_dataset
 
-def find_project_root(start: Path) -> Path:
-    for p in [start] + list(start.parents):
-        if (p / "replication_lu25").is_dir():
-            return p
-    raise RuntimeError(
-        f"Could not find project root containing 'replication_lu25' when starting from {start}"
-    )
-
-PROJECT_ROOT = find_project_root(HERE.parent)
-REPL_ROOT = PROJECT_ROOT / "replication_lu25"
-
-if str(REPL_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPL_ROOT))
-
-# Defaults for optional modules (prevents NameError later)
+# Optional Lu25 MAP
 HAS_LU25_MAP = False
-estimate_lu25_map = None
-Lu25MapConfig = None
-
 try:
-    from ..estimators.blp import estimate_blp_sigma
-    from ..estimators.shrinkage import estimate_shrinkage_sigma
-    from ..simulation.config import SimConfig
-    from ..simulation.simulate import simulate_dataset
+    from ..estimators.lu25_map import Lu25MapConfig, estimate_lu25_map  # type: ignore
 
-    try:
-        from ..estimators.lu25_map import Lu25MapConfig, estimate_lu25_map
-
-        HAS_LU25_MAP = True
-    except Exception:
-        HAS_LU25_MAP = False
-
-except Exception as e:
-    raise ImportError(
-        "Could not import repo modules. Make sure you run inside the project with "
-        "replication_lu25/ present."
-    ) from e
-
-# -----------------------------------------------------------------------------
-# Logging + IO
-# -----------------------------------------------------------------------------
-
-
-class OutputLogger:
-    """Print to console AND write to a file."""
-
-    def __init__(self, filename: Path):
-        self.terminal = sys.stdout
-        self.log = open(filename, "w", encoding="utf-8")
-
-    def write(self, message: str):
-        self.terminal.write(message)
-        self.log.write(message)
-
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
-
-    def close(self):
-        try:
-            self.log.close()
-        except Exception:
-            pass
-
-
-def ensure_results_dir() -> Path:
-    results_dir = PROJECT_ROOT / "results"
-    results_dir.mkdir(exist_ok=True)
-    return results_dir
-
-
-def print_progress_bar(
-    iteration: int, total: int, prefix: str = "", suffix: str = "", length: int = 36
-):
-    if total <= 0:
-        return
-    pct = 100.0 * (iteration / float(total))
-    filled = int(length * iteration // total)
-    bar = "█" * filled + "░" * (length - filled)
-    print(f"\r{prefix} |{bar}| {pct:5.1f}% {suffix}", end="", flush=True)
-    if iteration == total:
-        print()
+    HAS_LU25_MAP = True
+except Exception:
+    HAS_LU25_MAP = False
 
 
 # -----------------------------------------------------------------------------
 # Config
 # -----------------------------------------------------------------------------
 
-
 @dataclass
 class StudyConfig:
-    """Monte Carlo study config (grid + estimator settings)."""
-
-    # Monte Carlo reps
+    """Monte Carlo study config (replications + estimator settings)."""
     R_mc: int = 50
-
-    # Base seed: replication r uses seed + r
     seed: int = 123
 
-    # Shrinkage settings (must match what you used in your validated MC script)
+    # Shrinkage (TFP MCMC) settings
     shrink_n_iter: int = 200
     shrink_burn: int = 100
     shrink_v0: float = 1e-4
     shrink_v1: float = 1.0
 
-    # Optional Lu25 MAP settings (only used if HAS_LU25_MAP)
+    # Lu25 MAP (optional)
     lu_steps: int = 1200
     lu_lr: float = 0.05
     lu_l1_strength: float = 8.0
@@ -167,8 +66,7 @@ class StudyConfig:
     lu_tau_detect: float = 0.25
 
 
-# IMPORTANT: edit this grid to match Table 1 exactly.
-# If the paper uses multiple (T,J) cells, list them here.
+# IMPORTANT: edit this grid if you need to match Table 1 exactly.
 DEFAULT_GRID: List[Tuple[str, int, int]] = [
     ("DGP1", 25, 15),
     ("DGP2", 25, 15),
@@ -178,8 +76,41 @@ DEFAULT_GRID: List[Tuple[str, int, int]] = [
 
 
 # -----------------------------------------------------------------------------
-# Summaries
+# Helpers
 # -----------------------------------------------------------------------------
+
+def ensure_dir(p: Path) -> Path:
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+class TeeLogger:
+    """Write to console and to a log file."""
+    def __init__(self, log_path: Path):
+        self.log_path = log_path
+        self._fh = open(log_path, "w", encoding="utf-8")
+
+    def write(self, msg: str) -> None:
+        print(msg, end="")
+        self._fh.write(msg)
+
+    def close(self) -> None:
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+
+
+def inject_market_size(markets: list, cfg: SimConfig) -> None:
+    """
+    Ensure market dictionaries contain market size N if required by downstream estimators.
+    Many likelihood-style estimators need N_t; BLP typically doesn't, but keeping it consistent helps.
+    """
+    Nt = getattr(cfg, "Nt", None)
+    if Nt is None:
+        return
+    for m in markets:
+        m["N"] = int(Nt)
 
 
 def init_storage(R: int) -> Dict[str, np.ndarray]:
@@ -202,29 +133,7 @@ def summarize_vec(x: np.ndarray, true_val: float) -> Dict[str, float]:
     return {"mean": mean, "bias": bias, "sd": sd, "rmse": rmse, "n": int(x.size)}
 
 
-def print_method_table(
-    title: str, summary: Dict[str, Dict[str, float]], true_params: Dict[str, float]
-):
-    print(f"\n{'-' * 90}")
-    print(title)
-    print(f"{'-' * 90}")
-    print(
-        f"{'Param':<8} {'True':>10} {'Mean':>10} {'Bias':>10} {'SD':>10} {'RMSE':>10} {'n':>6}"
-    )
-    print(f"{'-' * 90}")
-    mapping = [("sigma", "σ"), ("beta_p", "β_p"), ("beta_w", "β_w")]
-    for k, sym in mapping:
-        s = summary[k]
-        tv = true_params[k]
-        print(
-            f"{sym:<8} {tv:>10.4f} {s['mean']:>10.4f} {s['bias']:>10.4f} {s['sd']:>10.4f} {s['rmse']:>10.4f} {s['n']:>6d}"
-        )
-
-
-def save_summary_csv(
-    path: Path, cell_key: str, summaries: Dict[str, Dict[str, Dict[str, float]]]
-):
-    # Append mode: one big CSV across the whole grid
+def save_summary_csv(path: Path, cell_key: str, summaries: Dict[str, Dict[str, Dict[str, float]]]) -> None:
     header = "cell,method,parameter,mean,bias,sd,rmse,n\n"
     write_header = not path.exists()
     with open(path, "a", encoding="utf-8") as f:
@@ -234,20 +143,44 @@ def save_summary_csv(
             for param in ["sigma", "beta_p", "beta_w"]:
                 s = summ[param]
                 f.write(
-                    f"{cell_key},{method},{param},{s['mean']:.6f},{s['bias']:.6f},{s['sd']:.6f},{s['rmse']:.6f},{s['n']}\n"
+                    f"{cell_key},{method},{param},"
+                    f"{s['mean']:.6f},{s['bias']:.6f},{s['sd']:.6f},{s['rmse']:.6f},{s['n']}\n"
                 )
 
 
-# -----------------------------------------------------------------------------
-# Estimator runners (repo-consistent)
-# -----------------------------------------------------------------------------
+def print_method_table(title: str, summary: Dict[str, Dict[str, float]], true_params: Dict[str, float]) -> None:
+    print("\n" + "-" * 90)
+    print(title)
+    print("-" * 90)
+    print(f"{'Param':<8} {'True':>10} {'Mean':>10} {'Bias':>10} {'SD':>10} {'RMSE':>10} {'n':>6}")
+    print("-" * 90)
+    mapping = [("sigma", "σ"), ("beta_p", "β_p"), ("beta_w", "β_w")]
+    for k, sym in mapping:
+        s = summary[k]
+        tv = true_params[k]
+        print(
+            f"{sym:<8} {tv:>10.4f} {s['mean']:>10.4f} {s['bias']:>10.4f} {s['sd']:>10.4f} "
+            f"{s['rmse']:>10.4f} {s['n']:>6d}"
+        )
 
 
-def run_blp_mc(markets, cfg: SimConfig, iv_type: str):
+def _warn_exception(prefix: str, e: Exception) -> None:
+    print(f"\n[WARN] {prefix}: {type(e).__name__}: {e}")
+    tb = traceback.format_exc(limit=3)
+    print(tb)
+
+
+# -----------------------------------------------------------------------------
+# Estimator runners
+# -----------------------------------------------------------------------------
+
+def run_blp(markets, cfg: SimConfig, iv_type: str):
+    # estimate_blp_sigma returns (sigma_hat, beta_hat, extras)
     return estimate_blp_sigma(markets, iv_type=iv_type, R=cfg.R0)
 
 
-def run_shrinkage_mc(markets, study: StudyConfig, cfg: SimConfig):
+def run_shrinkage(markets, study: StudyConfig, cfg: SimConfig):
+    # estimate_shrinkage_sigma returns (sigma_hat, beta_hat, score, gamma_prob)
     return estimate_shrinkage_sigma(
         markets,
         R=cfg.R0,
@@ -258,10 +191,9 @@ def run_shrinkage_mc(markets, study: StudyConfig, cfg: SimConfig):
     )
 
 
-def run_lu25_map_mc(markets, study: StudyConfig, cfg: SimConfig, rep_seed: int):
+def run_lu25_map(markets, study: StudyConfig, cfg: SimConfig, rep_seed: int):
     if not HAS_LU25_MAP:
-        raise RuntimeError("Lu25 MAP estimator not available in this repo layout.")
-
+        raise RuntimeError("Lu25 MAP estimator not available.")
     lu_cfg = Lu25MapConfig(
         R=cfg.R0,
         steps=study.lu_steps,
@@ -276,75 +208,78 @@ def run_lu25_map_mc(markets, study: StudyConfig, cfg: SimConfig, rep_seed: int):
 
 
 # -----------------------------------------------------------------------------
-# One cell (DGP,T,J)
+# One cell runner
 # -----------------------------------------------------------------------------
 
-
-def run_cell(  # noqa: C901
-    dgp: str, T: int, J: int, study: StudyConfig, cfg: SimConfig, include_lu25_map: bool
+def run_cell(
+    dgp: str,
+    T: int,
+    J: int,
+    study: StudyConfig,
+    cfg: SimConfig,
+    include_lu25_map: bool,
 ) -> Dict[str, Dict[str, Dict[str, float]]]:
-    """Run one Table-1-style cell and return summaries."""
-
     true_params = {
         "sigma": float(cfg.sigma_star),
         "beta_p": float(cfg.beta_p_star),
         "beta_w": float(cfg.beta_w_star),
     }
 
-    # storage
-    blp_iv = init_storage(study.R_mc)
-    blp_noiv = init_storage(study.R_mc)
+    blp_cost = init_storage(study.R_mc)
+    blp_nocost = init_storage(study.R_mc)
     shrink = init_storage(study.R_mc)
     lu25 = init_storage(study.R_mc) if include_lu25_map and HAS_LU25_MAP else None
 
-    # optional sparsity tracking
-    # shrinkage returns gamma probabilities (T*J,) per rep in your repo
     shrink_gamma_list: List[np.ndarray] = []
     lu25_gamma_list: List[np.ndarray] = []
 
-    print(f"\n{'=' * 90}")
-    print(f"Cell: {dgp}, T={T}, J={J}, N_t={getattr(cfg, 'Nt', 'NA')}, R0={cfg.R0}")
-    print(f"{'=' * 90}")
+    print("\n" + "=" * 90)
+    print(f"Cell: {dgp}, T={T}, J={J}, Nt={getattr(cfg, 'Nt', 'NA')}, R0={cfg.R0}, R_mc={study.R_mc}")
+    print("=" * 90)
 
     for r in range(study.R_mc):
-        rep_seed = study.seed + r
+        rep_seed = int(study.seed + r)
         np.random.seed(rep_seed)
 
         markets = simulate_dataset(dgp, T=T, J=J, cfg=cfg)
+        inject_market_size(markets, cfg)
 
-        # 1) BLP + cost IV
+        # 1) BLP + Cost IV
         try:
-            sigma_hat, beta_hat, _ = run_blp_mc(markets, cfg, iv_type="cost")
-            blp_iv["sigma"][r] = float(sigma_hat)
-            blp_iv["beta_p"][r] = float(beta_hat[1])
-            blp_iv["beta_w"][r] = float(beta_hat[2])
-        except Exception:
-            blp_iv["fail"][r] = 1
+            sigma_hat, beta_hat, _ = run_blp(markets, cfg, iv_type="cost")
+            blp_cost["sigma"][r] = float(sigma_hat)
+            blp_cost["beta_p"][r] = float(beta_hat[1])
+            blp_cost["beta_w"][r] = float(beta_hat[2])
+        except Exception as e:
+            blp_cost["fail"][r] = 1
+            _warn_exception(f"BLP+CostIV failed (rep={r}, seed={rep_seed})", e)
 
-        # 2) BLP - cost IV
+        # 2) BLP - Cost IV
         try:
-            sigma_hat, beta_hat, _ = run_blp_mc(markets, cfg, iv_type="nocost")
-            blp_noiv["sigma"][r] = float(sigma_hat)
-            blp_noiv["beta_p"][r] = float(beta_hat[1])
-            blp_noiv["beta_w"][r] = float(beta_hat[2])
-        except Exception:
-            blp_noiv["fail"][r] = 1
+            sigma_hat, beta_hat, _ = run_blp(markets, cfg, iv_type="nocost")
+            blp_nocost["sigma"][r] = float(sigma_hat)
+            blp_nocost["beta_p"][r] = float(beta_hat[1])
+            blp_nocost["beta_w"][r] = float(beta_hat[2])
+        except Exception as e:
+            blp_nocost["fail"][r] = 1
+            _warn_exception(f"BLP-NoCostIV failed (rep={r}, seed={rep_seed})", e)
 
         # 3) Shrinkage
         try:
-            sigma_s, beta_s, _score, gamma_prob = run_shrinkage_mc(markets, study, cfg)
+            sigma_s, beta_s, _score, gamma_prob = run_shrinkage(markets, study, cfg)
             shrink["sigma"][r] = float(sigma_s)
             shrink["beta_p"][r] = float(beta_s[1])
             shrink["beta_w"][r] = float(beta_s[2])
             if gamma_prob is not None:
                 shrink_gamma_list.append(np.asarray(gamma_prob))
-        except Exception:
+        except Exception as e:
             shrink["fail"][r] = 1
+            _warn_exception(f"Shrinkage failed (rep={r}, seed={rep_seed})", e)
 
         # 4) Lu25 MAP (optional)
-        if include_lu25_map and HAS_LU25_MAP:
+        if include_lu25_map and HAS_LU25_MAP and lu25 is not None:
             try:
-                lu_res = run_lu25_map_mc(markets, study, cfg, rep_seed=rep_seed)
+                lu_res = run_lu25_map(markets, study, cfg, rep_seed=rep_seed)
                 sigma_lu = float(lu_res["sigma_hat"])
                 beta_lu = np.asarray(lu_res["beta_hat"], dtype=float)
 
@@ -354,36 +289,29 @@ def run_cell(  # noqa: C901
 
                 if lu_res.get("gamma_hat") is not None:
                     lu25_gamma_list.append(np.asarray(lu_res["gamma_hat"]))
-            except Exception:
+            except Exception as e:
                 lu25["fail"][r] = 1
+                _warn_exception(f"Lu25MAP failed (rep={r}, seed={rep_seed})", e)
 
-        # progress
-        print_progress_bar(
-            r + 1,
-            study.R_mc,
-            prefix=f"  {dgp} T={T:<3d} J={J:<3d}",
-            suffix=f"({r + 1}/{study.R_mc})",
-        )
+        if (r + 1) % max(1, study.R_mc // 10) == 0 or (r + 1) == study.R_mc:
+            print(f"  progress: {r + 1}/{study.R_mc}", flush=True)
 
-    # summarize
-    summaries: Dict[str, Dict[str, Dict[str, float]]] = {}
-
-    summaries["BLP+CostIV"] = {
-        "sigma": summarize_vec(blp_iv["sigma"], true_params["sigma"]),
-        "beta_p": summarize_vec(blp_iv["beta_p"], true_params["beta_p"]),
-        "beta_w": summarize_vec(blp_iv["beta_w"], true_params["beta_w"]),
-    }
-
-    summaries["BLP-NoCostIV"] = {
-        "sigma": summarize_vec(blp_noiv["sigma"], true_params["sigma"]),
-        "beta_p": summarize_vec(blp_noiv["beta_p"], true_params["beta_p"]),
-        "beta_w": summarize_vec(blp_noiv["beta_w"], true_params["beta_w"]),
-    }
-
-    summaries["Shrinkage"] = {
-        "sigma": summarize_vec(shrink["sigma"], true_params["sigma"]),
-        "beta_p": summarize_vec(shrink["beta_p"], true_params["beta_p"]),
-        "beta_w": summarize_vec(shrink["beta_w"], true_params["beta_w"]),
+    summaries: Dict[str, Dict[str, Dict[str, float]]] = {
+        "BLP+CostIV": {
+            "sigma": summarize_vec(blp_cost["sigma"], true_params["sigma"]),
+            "beta_p": summarize_vec(blp_cost["beta_p"], true_params["beta_p"]),
+            "beta_w": summarize_vec(blp_cost["beta_w"], true_params["beta_w"]),
+        },
+        "BLP-NoCostIV": {
+            "sigma": summarize_vec(blp_nocost["sigma"], true_params["sigma"]),
+            "beta_p": summarize_vec(blp_nocost["beta_p"], true_params["beta_p"]),
+            "beta_w": summarize_vec(blp_nocost["beta_w"], true_params["beta_w"]),
+        },
+        "Shrinkage": {
+            "sigma": summarize_vec(shrink["sigma"], true_params["sigma"]),
+            "beta_p": summarize_vec(shrink["beta_p"], true_params["beta_p"]),
+            "beta_w": summarize_vec(shrink["beta_w"], true_params["beta_w"]),
+        },
     }
 
     if include_lu25_map and HAS_LU25_MAP and lu25 is not None:
@@ -393,20 +321,15 @@ def run_cell(  # noqa: C901
             "beta_w": summarize_vec(lu25["beta_w"], true_params["beta_w"]),
         }
 
-    # print tables
     print_method_table("BLP + Cost IV", summaries["BLP+CostIV"], true_params)
     print_method_table("BLP − Cost IV", summaries["BLP-NoCostIV"], true_params)
     print_method_table("Shrinkage", summaries["Shrinkage"], true_params)
     if include_lu25_map and HAS_LU25_MAP and "Lu25MAP" in summaries:
         print_method_table("Lu25 MAP", summaries["Lu25MAP"], true_params)
 
-    # optional sparsity summary (only if shrinkage gamma is available)
     if len(shrink_gamma_list) > 0 and dgp in ["DGP1", "DGP2"]:
-        # In your repo: first sparse_frac*J are true signals (non-zero)
         cutoff = int(cfg.sparse_frac * J)
-        G = np.stack(
-            [g.reshape(T, J) for g in shrink_gamma_list], axis=0
-        )  # [R_eff, T, J]
+        G = np.stack([g.reshape(T, J) for g in shrink_gamma_list], axis=0)
         gamma_avg = G.mean(axis=(0, 1))  # [J]
         signal = float(gamma_avg[:cutoff].mean()) if cutoff > 0 else np.nan
         noise = float(gamma_avg[cutoff:].mean()) if cutoff < J else np.nan
@@ -415,141 +338,170 @@ def run_cell(  # noqa: C901
         print(f"  avg gamma signal: {signal:.4f}")
         print(f"  avg gamma noise:  {noise:.4f}")
 
-    if (
-        include_lu25_map
-        and HAS_LU25_MAP
-        and len(lu25_gamma_list) > 0
-        and dgp in ["DGP1", "DGP2"]
-    ):
+    if include_lu25_map and HAS_LU25_MAP and len(lu25_gamma_list) > 0 and dgp in ["DGP1", "DGP2"]:
         cutoff = int(cfg.sparse_frac * J)
-        H = np.stack(
-            [g.reshape(T, J) for g in lu25_gamma_list], axis=0
-        )  # [R_eff, T, J]
-        gamma_rate = H.mean(axis=0)  # [T,J]
+        H = np.stack([g.reshape(T, J) for g in lu25_gamma_list], axis=0)
+        gamma_rate = H.mean(axis=0)  # [T, J]
         signal_rate = float(gamma_rate[:, :cutoff].mean()) if cutoff > 0 else np.nan
         noise_rate = float(gamma_rate[:, cutoff:].mean()) if cutoff < J else np.nan
         print("\nSparsity recovery (Lu25MAP; mean detect rate |d|>tau):")
         print(f"  tau_detect: {study.lu_tau_detect:.3f}")
         print(f"  detect rate signal: {signal_rate:.4f}")
         print(f"  detect rate noise:  {noise_rate:.4f}")
-        print(
-            f"  specificity (1-noise): {1.0 - noise_rate:.4f}"
-            if not np.isnan(noise_rate)
-            else ""
-        )
-
-    # failure counts
-    print("\nFailures (count / R):")
-    print(f"  BLP+CostIV   : {int(np.sum(blp_iv['fail']))}/{study.R_mc}")
-    print(f"  BLP-NoCostIV : {int(np.sum(blp_noiv['fail']))}/{study.R_mc}")
-    print(f"  Shrinkage    : {int(np.sum(shrink['fail']))}/{study.R_mc}")
-    if include_lu25_map and HAS_LU25_MAP and lu25 is not None:
-        print(f"  Lu25MAP      : {int(np.sum(lu25['fail']))}/{study.R_mc}")
 
     return summaries
 
 
 # -----------------------------------------------------------------------------
-# Main study runner
+# CLI
 # -----------------------------------------------------------------------------
 
-
-def main(argv: list[str] | None = None):
-    import argparse
-    parser = argparse.ArgumentParser(description="Replicate Lu(25) Section 4 simulation study")
-    parser.add_argument("--out", type=str, default="results", help="Output directory")
-    parser.add_argument("--smoke", action="store_true", help="Tiny fast run for CI/sanity")
-    args = parser.parse_args(argv)
-    results_dir = Path(args.out)
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    # Smoke mode: drastically reduce compute
-    if args.smoke:
-        global DEFAULT_GRID
-        DEFAULT_GRID = [("baseline", 2, 3)]
-        # override defaults inside study config later by mutating after creation
-
-    results_dir = ensure_results_dir()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # Configure study
-    study = StudyConfig(
-        R_mc=50,
-        seed=123,
-        shrink_n_iter=200,
-        shrink_burn=100,
-        shrink_v0=1e-4,
-        shrink_v1=1.0,
-        lu_steps=1200,
-        lu_lr=0.05,
-        lu_l1_strength=8.0,
-        lu_mu_sd=2.0,
-        lu_tau_detect=0.25,
+def build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Replicate Lu(25) Section 4 simulation study.")
+    p.add_argument("--out", type=str, default=None, help="Output directory (default: results/part2/<timestamp>).")
+    p.add_argument("--smoke", action="store_true", help="Run a small configuration quickly (sanity check).")
+    p.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Force CPU (avoid Metal/GPU RNG differences; improves reproducibility).",
     )
-    if args.smoke:
-        study.R_mc = 2
-        study.shrink_n_iter = 50
-        study.shrink_burn = 10
-        study.lu_steps = 50
-        study.seed = 123
 
-    include_lu25_map = HAS_LU25_MAP  # set False if you only want the 3 benchmarks
+    p.add_argument("--R-mc", type=int, default=None, help="Monte Carlo replications (overrides default).")
+    p.add_argument("--seed", type=int, default=None, help="Base seed (rep r uses seed + r).")
 
-    # Initialize SimConfig (paper parameters live here)
-    cfg = SimConfig()
+    p.add_argument("--include-lu25-map", action="store_true", help="Also run optional Lu25 MAP estimator (if available).")
 
-    # Log file
-    log_path = results_dir / f"replication_study_{timestamp}.txt"
-    csv_path = results_dir / f"replication_study_{timestamp}.csv"
+    p.add_argument("--shrink-n-iter", type=int, default=None)
+    p.add_argument("--shrink-burn", type=int, default=None)
+    p.add_argument("--shrink-v0", type=float, default=None)
+    p.add_argument("--shrink-v1", type=float, default=None)
 
-    logger = OutputLogger(log_path)
-    old_stdout = sys.stdout
-    sys.stdout = logger
+    p.add_argument("--grid", type=str, default=None, help="Grid override: 'DGP1:25:15,DGP2:25:15' etc.")
+    return p
 
+
+def parse_grid(s: str) -> List[Tuple[str, int, int]]:
+    grid: List[Tuple[str, int, int]] = []
+    for token in s.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        parts = token.split(":")
+        if len(parts) != 3:
+            raise ValueError(f"Bad grid token '{token}'. Expected DGP:T:J")
+        dgp, T, J = parts[0], int(parts[1]), int(parts[2])
+        grid.append((dgp, T, J))
+    return grid
+
+
+def main(argv: List[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+
+    # Best-effort CPU-only on macOS Metal:
+    # Prefer env var (works even if TF is imported elsewhere at module-import time),
+    # then also hide visible GPU devices if TF is available.
+    if args.cpu:
+        os.environ["TF_METAL_DEVICE_DISABLED"] = "1"
+
+        # If TF hasn't been imported yet, this will reliably prevent GPU usage.
+        # If it has, this may raise; we swallow and continue.
+        try:
+            import tensorflow as tf  # noqa: F401
+            tf.config.set_visible_devices([], "GPU")
+        except Exception:
+            pass
+
+    # Output dir
+    if args.out is None:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path("results") / "part2" / f"lu25_section4_{ts}"
+    else:
+        out_dir = Path(args.out)
+    ensure_dir(out_dir)
+
+    logger = TeeLogger(out_dir / "run.log")
     try:
-        print("#" * 90)
-        print("LU & SHIMIZU (2025) — SECTION 4 REPLICATION STUDY (repo-consistent)")
-        print("#" * 90)
-        print(f"Timestamp: {timestamp}")
-        print(f"R_mc: {study.R_mc}")
-        print(f"Base seed: {study.seed}")
-        print(f"Market size N_t (cfg.Nt): {getattr(cfg, 'Nt', 'NA')}")
-        print(f"Consumer draws R0 (cfg.R0): {cfg.R0}")
-        print(
-            f"Shrinkage: n_iter={study.shrink_n_iter}, burn={study.shrink_burn}, v0={study.shrink_v0}, v1={study.shrink_v1}"
-        )
-        if include_lu25_map:
-            print(
-                f"Lu25 MAP: steps={study.lu_steps}, lr={study.lu_lr}, l1_strength={study.lu_l1_strength}, tau={study.lu_tau_detect}"
-            )
-        else:
-            print("Lu25 MAP: disabled")
+        logger.write("Lu(25) Section 4 replication\n")
+        logger.write(f"TIME: {datetime.now().isoformat()}\n")
+        logger.write(f"OUT:  {out_dir.resolve()}\n")
+        logger.write(f"CPU_ONLY: {bool(args.cpu)}\n")
+        logger.write(f"HAS_LU25_MAP: {HAS_LU25_MAP}\n\n")
 
-        # True parameters
-        print("\nTrue parameters (from SimConfig):")
-        print(f"  sigma*:  {cfg.sigma_star:.4f}")
-        print(f"  beta_p*: {cfg.beta_p_star:.4f}")
-        print(f"  beta_w*: {cfg.beta_w_star:.4f}")
+        # Base configs
+        study = StudyConfig()
+        cfg = SimConfig()
+
+        # Grid / smoke overrides
+        grid = DEFAULT_GRID
+        if args.smoke:
+            # Slightly less degenerate than (T=2,J=3), but still fast.
+            study.R_mc = 3
+            study.seed = 0
+            study.shrink_n_iter = 100
+            study.shrink_burn = 50
+            grid = [("DGP1", 5, 10)]
+
+        # Apply CLI overrides
+        if args.R_mc is not None:
+            study.R_mc = int(args.R_mc)
+        if args.seed is not None:
+            study.seed = int(args.seed)
+
+        if args.shrink_n_iter is not None:
+            study.shrink_n_iter = int(args.shrink_n_iter)
+        if args.shrink_burn is not None:
+            study.shrink_burn = int(args.shrink_burn)
+        if args.shrink_v0 is not None:
+            study.shrink_v0 = float(args.shrink_v0)
+        if args.shrink_v1 is not None:
+            study.shrink_v1 = float(args.shrink_v1)
+
+        if args.grid:
+            grid = parse_grid(args.grid)
+
+        # Save run config snapshot (explicit keys only; avoids dir(cfg) noise)
+        sim_keys = ["R0", "Nt", "sparse_frac", "sigma_star", "beta_p_star", "beta_w_star"]
+        cfg_path = out_dir / "config.json"
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "study": study.__dict__,
+                    "sim": {k: getattr(cfg, k, None) for k in sim_keys},
+                    "grid": grid,
+                    "include_lu25_map": bool(args.include_lu25_map),
+                    "cpu_only": bool(args.cpu),
+                },
+                f,
+                indent=2,
+                default=str,
+            )
 
         # Run grid
-        for dgp, T, J in DEFAULT_GRID:
-            cell_key = f"{dgp}_T{T}_J{J}"
-            summaries = run_cell(
-                dgp, T, J, study, cfg, include_lu25_map=include_lu25_map
-            )
-            save_summary_csv(csv_path, cell_key, summaries)
+        summary_csv = out_dir / "summary.csv"
+        if summary_csv.exists():
+            summary_csv.unlink()
 
-        print("\n" + "=" * 90)
-        print("Study complete.")
-        print("Saved outputs:")
-        print(f"  Log: {log_path.name}")
-        print(f"  CSV: {csv_path.name}")
-        print("=" * 90)
+        for (dgp, T, J) in grid:
+            cell_key = f"{dgp}_T{T}_J{J}"
+            logger.write(f"\n=== RUN CELL {cell_key} ===\n")
+
+            summaries = run_cell(
+                dgp=dgp,
+                T=int(T),
+                J=int(J),
+                study=study,
+                cfg=cfg,
+                include_lu25_map=bool(args.include_lu25_map),
+            )
+            save_summary_csv(summary_csv, cell_key, summaries)
+
+        logger.write("\nDONE.\n")
+        logger.write(f"Summary CSV: {summary_csv.resolve()}\n")
+        return 0
 
     finally:
-        sys.stdout = old_stdout
         logger.close()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
