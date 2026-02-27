@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jpm-q3"
+version = "0.1.0"
+description = "Q3 submission package: DeepHalo (Zhang 2025), Lu 2025 replication, and hybrid extensions."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "tensorflow",
+  "tensorflow-probability",
+  "choice-learn",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+jpmq3-run-all = "jpm_q3.cli.run_all:main"
+jpmq3-replicate-lu25 = "jpm_q3.cli.replicate_lu25:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
