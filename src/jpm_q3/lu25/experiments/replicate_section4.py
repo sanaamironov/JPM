@@ -112,12 +112,18 @@ def inject_market_size(markets: list, cfg: SimConfig) -> None:
     for m in markets:
         m["N"] = int(Nt)
 
-
+#update to match the paper output 1-->1
 def init_storage(R: int) -> Dict[str, np.ndarray]:
     return {
-        "sigma": np.full(R, np.nan),
+        "int": np.full(R, np.nan),      # intercept
         "beta_p": np.full(R, np.nan),
         "beta_w": np.full(R, np.nan),
+        "sigma": np.full(R, np.nan),
+
+        # xi metrics (scalar per replication)
+        "xi_bias_abs": np.full(R, np.nan),  # mean_j,t |xi_hat - xi_true|
+        "xi_sd": np.full(R, np.nan),        # sd of xi_hat - xi_true across (j,t)
+
         "fail": np.zeros(R, dtype=int),
     }
 
@@ -412,6 +418,7 @@ def main(argv: List[str] | None = None) -> int:
     # Best-effort CPU-only on macOS Metal:
     # Prefer env var (works even if TF is imported elsewhere at module-import time),
     # then also hide visible GPU devices if TF is available.
+    # You can assign each part of the graph to a few threads and use up different cores to speed up computation
     if args.cpu:
         os.environ["TF_METAL_DEVICE_DISABLED"] = "1"
 
@@ -423,7 +430,7 @@ def main(argv: List[str] | None = None) -> int:
         except Exception:
             pass
 
-    # Output dir
+    # Output dir, will need to have a latex format as well
     if args.out is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path("results") / "part2" / f"lu25_section4_{ts}"
