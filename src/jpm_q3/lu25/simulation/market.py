@@ -1,5 +1,5 @@
 """
-simulate_market.py
+market.py
 
 Single-market simulator for Lu & Shimizu (2025) Monte Carlo designs.
 
