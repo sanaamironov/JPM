@@ -31,12 +31,16 @@ python -m jpm_q3.hybrid.zhang_lu_sparse
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
 from choice_learn.data import ChoiceDataset
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
 
 # Import DeepHalo from your packaged choice-learn extension
 from choice_learn_ext.models.deep_context.config import DeepHaloConfig
@@ -319,6 +323,86 @@ def simulate_context_plus_sparse(
 # -----------------------------------------------------------------------------
 # Ablation runner
 # -----------------------------------------------------------------------------
+def set_halo_trainable(model: ZhangSparseDeepHalo, trainable: bool) -> None:
+    """Freeze/unfreeze DeepHalo submodel."""
+    model.halo.trainable = bool(trainable)
+
+    # Some Keras submodules don’t fully respect .trainable until variables are rebuilt,
+    # but in practice this works for most TF/Keras modules. We also rely on selecting
+    # train_vars explicitly (below), which is the real enforcement.
+    #
+    #
+    def run_two_stage_full(
+        cfg: ZhangSparseConfig,
+        data: Dict[str, np.ndarray],
+        n_items: int,
+        T: int,
+        J_inside: int,
+        init_weights: list[np.ndarray],
+        stage1_epochs: Optional[int] = None,
+        stage2_epochs: Optional[int] = None,
+    ):
+        """
+        Two-stage training:
+          Stage 1: train DeepHalo + mu (d frozen at 0, L1 disabled)
+          Stage 2: freeze DeepHalo, train mu + d with L1 (sparse layer does the work)
+
+        Returns:
+          full_model, breakdown_dict
+        """
+        print(
+            "\n=== Two-stage: Full (DeepHalo + mu) then (freeze halo, learn mu + sparse d) ==="
+        )
+
+        # --------
+        # Stage 1
+        # --------
+        cfg1 = ZhangSparseConfig(**vars(cfg))
+        cfg1.l1_strength = 0.0  # d frozen, so remove L1 from objective
+        if stage1_epochs is not None:
+            cfg1.epochs = int(stage1_epochs)
+
+        model = build_and_init_model(
+            cfg1, n_items, T, J_inside, init_from_weights=init_weights
+        )
+
+        # Train Halo + mu only (no d)
+        set_halo_trainable(model, True)
+        train_vars_1 = select_train_vars(model, learn_mu=True, learn_d=False)
+
+        trainer1 = AblationTrainer(model, lr=cfg1.lr, train_vars=train_vars_1)
+        trainer1.fit(
+            data, batch_size=cfg1.batch_size, epochs=cfg1.epochs, verbose=cfg1.verbose
+        )
+
+        # --------
+        # Stage 2
+        # --------
+        cfg2 = ZhangSparseConfig(**vars(cfg))
+        if stage2_epochs is not None:
+            cfg2.epochs = int(stage2_epochs)
+
+        # Freeze halo: sparse layer must explain residual structure
+        set_halo_trainable(model, False)
+
+        # Important: keep halo variables OUT of train_vars in stage 2.
+        # We train only mu and d.
+        train_vars_2: list[tf.Variable] = [model.mu, model.d]
+
+        trainer2 = AblationTrainer(model, lr=cfg2.lr, train_vars=train_vars_2)
+        trainer2.fit(
+            data, batch_size=cfg2.batch_size, epochs=cfg2.epochs, verbose=cfg2.verbose
+        )
+
+        # Evaluate
+        nll = evaluate_nll(model, data)
+        bd = objective_breakdown(model, cfg2, data)
+
+        print("Two-stage Full results:")
+        print("  NLL:", nll)
+        print("  breakdown:", bd)
+
+        return model, bd
 
 
 def build_and_init_model(
@@ -480,16 +564,15 @@ def main():
         init_weights=init_weights,
     )
 
-    full_model, results["Full"] = run_one_ablation(
-        name="Full (DeepHalo + mu + sparse d)",
+    full_model, results["Full"] = run_two_stage_full(
         cfg=cfg,
         data=data,
         n_items=n_items,
         T=T,
         J_inside=J_inside,
-        learn_mu=True,
-        learn_d=True,
         init_weights=init_weights,
+        stage1_epochs=cfg.epochs,  # keep same or lower if you want faster
+        stage2_epochs=cfg.epochs,  # keep same or lower if you want faster
     )
 
     print("\n=== Summary (in-sample) ===")
