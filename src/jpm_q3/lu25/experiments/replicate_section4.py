@@ -210,15 +210,14 @@ def build_matrices_paper(
         p = np.asarray(m["p"], dtype=float).reshape(-1)
         w = np.asarray(m["w"], dtype=float).reshape(-1)
 
-        X = np.column_stack([p, w])
+        w_c = w - w.mean()  # within-market centering (recommended)
+        X = np.column_stack([p, w_c])
 
         if iv_type == "cost":
-            if "u" not in m:
-                raise KeyError("iv_type='cost' requires market['u'] (cost shock)")
             u = np.asarray(m["u"], dtype=float).reshape(-1)
-            Z = np.column_stack([w, w**2, u, u**2])
+            Z = np.column_stack([w_c, w_c**2, u, u**2])
         elif iv_type == "nocost":
-            Z = np.column_stack([w, w**2, w**3, w**4])
+            Z = np.column_stack([w_c, w_c**2, w_c**3, w_c**4])
         else:
             raise ValueError("iv_type must be 'cost' or 'nocost'")
 
