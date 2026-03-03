@@ -39,14 +39,18 @@ def generate_eta_alpha(
         eta = np.zeros(J, dtype=float)
         cutoff = int(np.floor(cfg.sparse_frac * J))
         if cutoff > 0:
-            vals = np.asarray(cfg.eta_sparse_vals, dtype=float)
-            # random signs among the non-zero set
-            eta[:cutoff] = rng.choice(vals, size=cutoff, replace=True)
+            # Deterministic pattern per Lu(25): odd=+1, even=-1 (1-indexed)
+            # In 0-index Python indices: 0->+1, 1->-1, 2->+1, ...
+            eta[:cutoff] = 1.0
+            eta[1:cutoff:2] = -1.0
 
         alpha = np.zeros(J, dtype=float)
         if dgp == "DGP2":
             # correlated endogenous component
-            alpha = cfg.alpha_scale * np.sign(eta)
+            #alpha = cfg.alpha_scale * np.sign(eta)
+            alpha = np.zeros(J, dtype=float)
+            if cutoff > 0:
+                alpha[:cutoff] = cfg.alpha_scale * eta[:cutoff]   # eta is ±1 here
 
     elif dgp in ("DGP3", "DGP4"):
         eta = rng.normal(loc=0.0, scale=cfg.eta_dense_sd, size=J).astype(float)

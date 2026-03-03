@@ -1,27 +1,29 @@
 """
 replicate_section4.py
 
-Paper-aligned replication driver for Lu(25) simulation study (Section 4).
+Paper-aligned replication driver for Lu & Shimizu (2025), Section 4.
 
-This version is a clean replacement that:
-- Keeps your existing CLI and output structure.
-- Adds paper-table reporting hooks:
-  - Int (intercept) tracked for all methods.
-  - xi metrics (mean|xi_hat - xi_true|, sd(xi_hat - xi_true)) for BLP methods
-    once estimate_blp_sigma returns extras["xi_hat"].
-  - Prob(signal/noise) for Shrinkage in DGP1/DGP2 using markets' is_signal mask
-    (requires simulate_market to provide m["is_signal"]).
-- Writes:
-  - summary.csv (long format; now includes Int and xi metrics)
-  - paper_table_like.csv (Bias/SD rows like the paper, with NaN where unavailable)
+Key paper-alignment choices (important):
+1) Regressors X exclude the constant:
+      X = [p, w]
+   This makes the residual equal to the paper's full xi_{jt} = bar_xi + eta_{jt}.
+2) Instruments Z also exclude the constant:
+   - cost IV:   Z = [w, w^2, u, u^2]
+   - no-cost IV Z = [w, w^2, w^3, w^4]
+   With bar_xi != 0, including a constant in Z would violate E[Z * xi] = 0.
+3) "Int" in the paper is bar_xi. We estimate it as:
+      Int_hat = mean(xi_hat) across all (j,t).
+4) "xi" column is computed from xi_hat vs xi_true:
+      mean_abs_error = mean(|xi_hat - xi_true|)
+      sd_error       = sd(xi_hat - xi_true)
 
-Preconditions (recommended):
-- simulate_market returns keys: xi_true and is_signal (see provided simulate_market.py).
-- estimate_blp_sigma returns (sigma_hat, beta_hat, extras) with extras["xi_hat"].
-- estimate_shrinkage_sigma already returns gamma_prob; prob metrics computed from it.
+Outputs:
+- summary.csv          (long format)
+- paper_table_like.csv (Bias/SD rows like Table 2)
 
-Usage:
-  python -m jpm_q3.lu25.experiments.replicate_section4 --cpu --out results/part2/section4_full
+CLI examples (repo root):
+  jpmq3-replicate-lu25 --smoke --cpu --out results/lu25_smoke
+  jpmq3-replicate-lu25 --cpu --out results/lu25_section4 --R-mc 50 --seed 0 --shrink-n-iter 800 --shrink-burn 400
 """
 
 from __future__ import annotations
@@ -33,580 +35,664 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 
-from ..estimators.blp import estimate_blp_sigma
-from ..estimators.shrinkage import estimate_shrinkage_sigma
+# --- Project imports ---
 from ..simulation.config import SimConfig
 from ..simulation.simulate import simulate_dataset
 
-# Optional Lu25 MAP
-HAS_LU25_MAP = False
-try:
-    from ..estimators.lu25_map import Lu25MapConfig, estimate_lu25_map  # type: ignore
+# BLP primitives
+from ..estimators.blp import compute_delta_vec, iv_2sls_beta  # type: ignore
 
-    HAS_LU25_MAP = True
-except Exception:
-    HAS_LU25_MAP = False
+# Shrinkage primitives
+from ..estimators.shrinkage import shrinkage_fit_beta_given_sigma  # type: ignore
 
 
 # -----------------------------------------------------------------------------
-# Config
+# Argument optional acceptacet for multi core programming 
 # -----------------------------------------------------------------------------
 
-@dataclass
-class StudyConfig:
-    """Monte Carlo study config (replications + estimator settings)."""
-    R_mc: int = 50
-    seed: int = 123
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument("--out", type=str, required=True, help="Output directory")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--R-mc", type=int, default=200, help="Num simulation draws R used in delta computation")
+    p.add_argument("--n-reps", type=int, default=50)
+    p.add_argument("--smoke", action="store_true", help="Small/fast run")
 
-    # Shrinkage (TFP MCMC) settings
-    shrink_n_iter: int = 200
-    shrink_burn: int = 100
-    shrink_v0: float = 1e-4
-    shrink_v1: float = 1.0
+    # multicore
+    p.add_argument("--n-jobs", type=int, default=1, help="Number of worker processes")
+    p.add_argument("--threads-per-job", type=int, default=1, help="Threads used inside each worker process")
 
-    # Lu25 MAP (optional)
-    lu_steps: int = 1200
-    lu_lr: float = 0.05
-    lu_l1_strength: float = 8.0
-    lu_mu_sd: float = 2.0
-    lu_tau_detect: float = 0.25
+    # Shrinkage controls
+    p.add_argument("--shrink-n-iter", type=int, default=800)
+    p.add_argument("--shrink-burn", type=int, default=400)
+    p.add_argument("--shrink-thin", type=int, default=2)
 
+    return p.parse_args(argv)
 
-DEFAULT_GRID: List[Tuple[str, int, int]] = [
-    ("DGP1", 25, 15),
-    ("DGP2", 25, 15),
-    ("DGP3", 25, 15),
-    ("DGP4", 25, 15),
-]
 
 
 # -----------------------------------------------------------------------------
-# Helpers
+# Helpers: stacking true objects from simulated markets
 # -----------------------------------------------------------------------------
 
-def ensure_dir(p: Path) -> Path:
-    p.mkdir(parents=True, exist_ok=True)
-    return p
 
-
-class TeeLogger:
-    """Write to console and to a log file."""
-    def __init__(self, log_path: Path):
-        self._fh = open(log_path, "w", encoding="utf-8")
-
-    def write(self, msg: str) -> None:
-        print(msg, end="")
-        self._fh.write(msg)
-
-    def close(self) -> None:
-        try:
-            self._fh.close()
-        except Exception:
-            pass
-
-
-def inject_market_size(markets: list, cfg: SimConfig) -> None:
-    """Ensure market dicts contain market size N if required by likelihood-style estimators."""
-    Nt = getattr(cfg, "Nt", None)
-    if Nt is None:
-        return
+def stack_true_xi(markets: List[dict]) -> np.ndarray:
+    xs = []
     for m in markets:
-        m["N"] = int(Nt)
+        if "xi_true" not in m:
+            raise KeyError("market missing xi_true")
+        xs.append(np.asarray(m["xi_true"], dtype=float).reshape(-1))
+    return np.concatenate(xs, axis=0)
 
 
-def _warn_exception(prefix: str, e: Exception) -> None:
-    print(f"\n[WARN] {prefix}: {type(e).__name__}: {e}")
-    print(traceback.format_exc(limit=3))
+def stack_is_signal(markets: List[dict]) -> np.ndarray:
+    ss = []
+    for m in markets:
+        if "is_signal" not in m:
+            raise KeyError("market missing is_signal")
+        ss.append(np.asarray(m["is_signal"], dtype=int).reshape(-1))
+    return np.concatenate(ss, axis=0)
 
 
-def init_storage(R: int) -> Dict[str, np.ndarray]:
-    """Per-replication storage for each method."""
-    return {
-        "int": np.full(R, np.nan),
-        "beta_p": np.full(R, np.nan),
-        "beta_w": np.full(R, np.nan),
-        "sigma": np.full(R, np.nan),
-
-        # xi metrics (paper column) -- filled when xi_hat and xi_true available
-        "xi_bias_abs": np.full(R, np.nan),  # mean |xi_hat - xi_true|
-        "xi_sd": np.full(R, np.nan),        # sd(xi_hat - xi_true)
-
-        # Prob columns for shrinkage (paper column), only meaningful for sparse DGPs
-        "prob_signal": np.full(R, np.nan),
-        "prob_noise": np.full(R, np.nan),
-
-        "fail": np.zeros(R, dtype=int),
-    }
+# -----------------------------------------------------------------------------
+# Paper-aligned matrices (NO constant in X or Z)
+# -----------------------------------------------------------------------------
 
 
-def summarize_param(x: np.ndarray, true_val: float) -> Dict[str, float]:
-    """mean/bias/sd/rmse/n for an estimated parameter."""
-    x = x[~np.isnan(x)]
-    if x.size == 0:
-        return {"mean": np.nan, "bias": np.nan, "sd": np.nan, "rmse": np.nan, "n": 0}
-    mean = float(np.mean(x))
-    bias = float(mean - true_val)
-    sd = float(np.std(x, ddof=1)) if x.size > 1 else 0.0
-    rmse = float(np.sqrt(bias * bias + sd * sd))
-    return {"mean": mean, "bias": bias, "sd": sd, "rmse": rmse, "n": int(x.size)}
-
-
-def summarize_metric(x: np.ndarray) -> Dict[str, float]:
+def build_matrices_paper(markets: List[dict], iv_type: str) -> Tuple[np.ndarray, np.ndarray]:
     """
-    mean/sd/n for a scalar metric already representing an error summary (xi/Prob).
-    We still populate the same keys to reuse CSV writer (bias=mean, rmse=sqrt(mean^2+sd^2)).
+    Paper-aligned stacking.
+
+    X = [p, w]
+    Z = instruments WITHOUT a constant
+      cost   : [w, w^2, u, u^2]
+      nocost : [w, w^2, w^3, w^4]
     """
-    x = x[~np.isnan(x)]
-    if x.size == 0:
-        return {"mean": np.nan, "bias": np.nan, "sd": np.nan, "rmse": np.nan, "n": 0}
-    mean = float(np.mean(x))
-    sd = float(np.std(x, ddof=1)) if x.size > 1 else 0.0
-    rmse = float(np.sqrt(mean * mean + sd * sd))
-    return {"mean": mean, "bias": mean, "sd": sd, "rmse": rmse, "n": int(x.size)}
+    Xs, Zs = [], []
+    for m in markets:
+        p = np.asarray(m["p"], dtype=float).reshape(-1)
+        w = np.asarray(m["w"], dtype=float).reshape(-1)
+
+        X = np.column_stack([p, w])
+
+        if iv_type == "cost":
+            if "u" not in m:
+                raise KeyError("iv_type='cost' requires market['u'] (cost shock)")
+            u = np.asarray(m["u"], dtype=float).reshape(-1)
+            Z = np.column_stack([w, w**2, u, u**2])
+        elif iv_type == "nocost":
+            Z = np.column_stack([w, w**2, w**3, w**4])
+        else:
+            raise ValueError("iv_type must be 'cost' or 'nocost'")
+
+        Xs.append(X)
+        Zs.append(Z)
+
+    return np.vstack(Xs), np.vstack(Zs)
 
 
-def stack_true_xi(markets: list[dict]) -> np.ndarray:
-    return np.concatenate([np.asarray(m["xi_true"], dtype=float) for m in markets], axis=0)
+# -----------------------------------------------------------------------------
+# Metrics (paper table columns)
+# -----------------------------------------------------------------------------
 
 
-def stack_is_signal(markets: list[dict]) -> np.ndarray:
-    return np.concatenate([np.asarray(m["is_signal"], dtype=int) for m in markets], axis=0)
+def mean_abs_and_sd(err: np.ndarray) -> Tuple[float, float]:
+    e = np.asarray(err, dtype=float).reshape(-1)
+    return float(np.mean(np.abs(e))), float(np.std(e, ddof=1))
 
 
-def compute_xi_bias_sd(xi_hat: np.ndarray, xi_true: np.ndarray) -> tuple[float, float]:
-    err = np.asarray(xi_hat, dtype=float).reshape(-1) - np.asarray(xi_true, dtype=float).reshape(-1)
-    return float(np.mean(np.abs(err))), float(np.std(err, ddof=1))
-
-
-def compute_prob_signal_noise(gamma_prob: np.ndarray, is_signal: np.ndarray) -> tuple[float, float]:
+def prob_signal_noise(gamma_prob: np.ndarray, is_signal: np.ndarray) -> Tuple[float, float]:
     g = np.asarray(gamma_prob, dtype=float).reshape(-1)
     s = np.asarray(is_signal, dtype=int).reshape(-1)
-    ps = float(np.mean(g[s == 1])) if np.any(s == 1) else np.nan
-    pn = float(np.mean(g[s == 0])) if np.any(s == 0) else np.nan
+    ps = float(np.mean(g[s == 1])) if np.any(s == 1) else float("nan")
+    pn = float(np.mean(g[s == 0])) if np.any(s == 0) else float("nan")
     return ps, pn
 
 
-def save_summary_csv(path: Path, cell: str, summaries: Dict[str, Dict[str, Dict[str, float]]]) -> None:
-    """
-    Long-format summary. One row per (cell, method, parameter).
-    Includes: int, beta_p, beta_w, sigma, xi_bias_abs, xi_sd, prob_signal, prob_noise.
-    """
-    header = "cell,method,parameter,mean,bias,sd,rmse,n\n"
-    write_header = not path.exists()
-    with open(path, "a", encoding="utf-8") as f:
-        if write_header:
-            f.write(header)
-        for method, summ in summaries.items():
-            for param in ["int", "beta_p", "beta_w", "sigma", "xi_bias_abs", "xi_sd", "prob_signal", "prob_noise"]:
-                s = summ[param]
-                f.write(
-                    f"{cell},{method},{param},"
-                    f"{s['mean']:.6f},{s['bias']:.6f},{s['sd']:.6f},{s['rmse']:.6f},{s['n']}\n"
-                )
+# -----------------------------------------------------------------------------
+# Paper-aligned BLP estimation (grid + refine), using X/Z above
+# -----------------------------------------------------------------------------
 
 
-def save_paper_table_like(path: Path, cell: str, method: str, summ: Dict[str, Dict[str, float]]) -> None:
+def gmm_objective_for_sigma_paper(
+    sigma: float, markets: List[dict], iv_type: str, R: int
+) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Paper-like CSV: two rows per method (Bias, SD).
-    Columns: Int, beta_p, beta_w, sigma, xi, Prob_signal, Prob_noise
+    One-step GMM objective, W = (Z'Z / N)^(-1), paper-aligned X/Z (no constant).
+
+    Returns:
+      obj, beta_hat, delta_vec, X, Z, xi_hat
     """
-    header = "cell,method,row,Int,beta_p,beta_w,sigma,xi,Prob_signal,Prob_noise\n"
-    write_header = not path.exists()
-    bias_row = {
-        "Int": summ["int"]["bias"],
-        "beta_p": summ["beta_p"]["bias"],
-        "beta_w": summ["beta_w"]["bias"],
-        "sigma": summ["sigma"]["bias"],
+    delta_vec = compute_delta_vec(markets, float(sigma), R=R)
+    X, Z = build_matrices_paper(markets, iv_type=iv_type)
+
+    beta_hat = iv_2sls_beta(delta_vec, X, Z).numpy()  # shape (2,)
+    xi_hat = delta_vec - X @ beta_hat  # this is full xi = bar_xi + eta
+
+    N = xi_hat.shape[0]
+    g = (Z.T @ xi_hat) / N
+    W = np.linalg.inv((Z.T @ Z) / N)
+    obj = float(g.T @ W @ g)
+
+    return obj, beta_hat, delta_vec, X, Z, xi_hat
+
+
+def estimate_blp_sigma_paper(markets: List[dict], iv_type: str, R: int) -> Tuple[float, np.ndarray, dict]:
+    grid = np.linspace(0.05, 4.0, 40)
+    best_obj = None
+    best_pack = None
+
+    for s in grid:
+        obj, beta, delta_vec, X, Z, xi_hat = gmm_objective_for_sigma_paper(s, markets, iv_type=iv_type, R=R)
+        if (best_obj is None) or (obj < best_obj):
+            best_obj = obj
+            best_pack = (float(s), beta, delta_vec, X, Z, xi_hat, float(obj))
+
+    s0 = float(best_pack[0])
+    refine = np.linspace(max(0.01, s0 - 0.25), s0 + 0.25, 30)
+
+    for s in refine:
+        obj, beta, delta_vec, X, Z, xi_hat = gmm_objective_for_sigma_paper(s, markets, iv_type=iv_type, R=R)
+        if obj < best_obj:
+            best_obj = obj
+            best_pack = (float(s), beta, delta_vec, X, Z, xi_hat, float(obj))
+
+    sigma_hat, beta_hat, delta_hat, X, Z, xi_hat, obj_hat = best_pack
+    extras = {
+        "obj_hat": float(obj_hat),
+        "delta_hat": np.asarray(delta_hat, dtype=float),
+        "X": np.asarray(X, dtype=float),
+        "Z": np.asarray(Z, dtype=float),
+        "xi_hat": np.asarray(xi_hat, dtype=float),
     }
-    sd_row = {
-        "Int": summ["int"]["sd"],
-        "beta_p": summ["beta_p"]["sd"],
-        "beta_w": summ["beta_w"]["sd"],
-        "sigma": summ["sigma"]["sd"],
-    }
-    xi_bias = summ["xi_bias_abs"]["mean"]
-    xi_sd = summ["xi_sd"]["mean"]
-    ps = summ["prob_signal"]["mean"]
-    pn = summ["prob_noise"]["mean"]
-
-    with open(path, "a", encoding="utf-8") as f:
-        if write_header:
-            f.write(header)
-        f.write(f"{cell},{method},Bias,{bias_row['Int']},{bias_row['beta_p']},{bias_row['beta_w']},{bias_row['sigma']},{xi_bias},{ps},{pn}\n")
-        f.write(f"{cell},{method},SD,{sd_row['Int']},{sd_row['beta_p']},{sd_row['beta_w']},{sd_row['sigma']},{xi_sd},,\n")
+    return float(sigma_hat), np.asarray(beta_hat, dtype=float), extras
 
 
-def print_method_table(title: str, summary: Dict[str, Dict[str, float]], true_params: Dict[str, float]) -> None:
-    print("\n" + "-" * 90)
-    print(title)
-    print("-" * 90)
-    print(f"{'Param':<8} {'True':>10} {'Mean':>10} {'Bias':>10} {'SD':>10} {'RMSE':>10} {'n':>6}")
-    print("-" * 90)
-    mapping = [("int", "Int"), ("beta_p", "β_p"), ("beta_w", "β_w"), ("sigma", "σ")]
-    for k, sym in mapping:
-        s = summary[k]
-        tv = true_params[k]
-        print(
-            f"{sym:<8} {tv:>10.4f} {s['mean']:>10.4f} {s['bias']:>10.4f} {s['sd']:>10.4f} "
-            f"{s['rmse']:>10.4f} {s['n']:>6d}"
+# -----------------------------------------------------------------------------
+# Paper-aligned shrinkage sigma search (uses paper X, no constant)
+# -----------------------------------------------------------------------------
+
+
+def shrinkage_objective_for_sigma_paper(
+    sigma: float, markets: List[dict], R: int, **kwargs
+) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Returns:
+      score, beta_hat, gamma_prob, acc_rate, delta_vec, X, xi_hat
+    """
+    delta_vec = compute_delta_vec(markets, float(sigma), R=R)
+    X, _ = build_matrices_paper(markets, iv_type="nocost")  # shrinkage uses X only; paper uses X=[p,w]
+
+    beta_hat, gamma_prob, score, acc_rate = shrinkage_fit_beta_given_sigma(delta_vec, X, **kwargs)
+    xi_hat = delta_vec - X @ beta_hat  # full xi
+
+    return float(score), np.asarray(beta_hat, dtype=float), np.asarray(gamma_prob, dtype=float), float(acc_rate), delta_vec, X, xi_hat
+
+
+def estimate_shrinkage_sigma_paper(
+    markets: List[dict],
+    R: int,
+    sigma_grid: Optional[np.ndarray] = None,
+    return_extras: bool = False,
+    **kwargs,
+):
+    if sigma_grid is None:
+        sigma_grid = np.linspace(0.05, 4.0, 40)
+
+    best = None  # (score, sigma, beta, gamma, delta, X, xi_hat)
+    best_acc = None
+
+    for s in sigma_grid:
+        score, beta_hat, gamma_prob, acc_rate, delta_vec, X, xi_hat = shrinkage_objective_for_sigma_paper(
+            s, markets, R=R, **kwargs
         )
+        if (best is None) or (score > best[0]):
+            best = (score, float(s), beta_hat, gamma_prob, delta_vec, X, xi_hat)
+            best_acc = acc_rate
+
+    s0 = float(best[1])
+    refine = np.linspace(max(0.01, s0 - 0.25), s0 + 0.25, 25)
+
+    for s in refine:
+        score, beta_hat, gamma_prob, acc_rate, delta_vec, X, xi_hat = shrinkage_objective_for_sigma_paper(
+            s, markets, R=R, **kwargs
+        )
+        if score > best[0]:
+            best = (score, float(s), beta_hat, gamma_prob, delta_vec, X, xi_hat)
+            best_acc = acc_rate
+
+    score_hat, sigma_hat, beta_hat, gamma_prob, delta_hat, X, xi_hat = best
+
+    if not return_extras:
+        return float(sigma_hat), np.asarray(beta_hat, dtype=float), float(score_hat), np.asarray(gamma_prob, dtype=float)
+
+    extras = {
+        "acc_rate": float(best_acc) if best_acc is not None else float("nan"),
+        "delta_hat": np.asarray(delta_hat, dtype=float),
+        "X": np.asarray(X, dtype=float),
+        "xi_hat": np.asarray(xi_hat, dtype=float),
+    }
+    return float(sigma_hat), np.asarray(beta_hat, dtype=float), float(score_hat), np.asarray(gamma_prob, dtype=float), extras
 
 
 # -----------------------------------------------------------------------------
-# Estimator runners
+# Runner
 # -----------------------------------------------------------------------------
 
-def run_blp(markets, cfg: SimConfig, iv_type: str):
-    # returns (sigma_hat, beta_hat, extras)
-    return estimate_blp_sigma(markets, iv_type=iv_type, R=cfg.R0)
+
+@dataclass(frozen=True)
+class GridPoint:
+    dgp: str
+    T: int
+    J: int
 
 
-def run_shrinkage(markets, study: StudyConfig, cfg: SimConfig):
-    # returns either 4-tuple or 5-tuple if return_extras=True
-    return estimate_shrinkage_sigma(
-        markets,
-        R=cfg.R0,
-        n_iter=study.shrink_n_iter,
-        burn=study.shrink_burn,
-        v0=study.shrink_v0,
-        v1=study.shrink_v1,
-        return_extras=True,
-    )
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
 
-def run_lu25_map(markets, study: StudyConfig, cfg: SimConfig, rep_seed: int):
-    if not HAS_LU25_MAP:
-        raise RuntimeError("Lu25 MAP estimator not available.")
-    lu_cfg = Lu25MapConfig(
-        R=cfg.R0,
-        steps=study.lu_steps,
-        lr=study.lu_lr,
-        l1_strength=study.lu_l1_strength,
-        mu_sd=study.lu_mu_sd,
-        tau_detect=study.lu_tau_detect,
-        default_market_size=int(getattr(cfg, "Nt", 1000)),
-        seed=rep_seed,
-    )
-    return estimate_lu25_map(markets, cfg=lu_cfg)
+def _warn_exception(msg: str, e: Exception) -> None:
+    print(f"[WARN] {msg}: {type(e).__name__}: {e}")
+    # Keep traceback short (still helpful)
+    tb = "".join(traceback.format_tb(e.__traceback__, limit=3))
+    print(tb)
 
 
-# -----------------------------------------------------------------------------
-# One cell runner
-# -----------------------------------------------------------------------------
-
-def run_cell(
+def run_one_rep(
+    *,
     dgp: str,
     T: int,
     J: int,
-    study: StudyConfig,
     cfg: SimConfig,
-    include_lu25_map: bool,
-) -> Dict[str, Dict[str, Dict[str, float]]]:
-    true_params = {
-        "int": float(getattr(cfg, "int_star", 0.0)),
-        "sigma": float(cfg.sigma_star),
-        "beta_p": float(cfg.beta_p_star),
-        "beta_w": float(cfg.beta_w_star),
-    }
+    rep_seed: int,
+    R_mc: int,
+    shrink_kwargs: dict,
+) -> Dict[str, dict]:
+    """
+    Returns dict keyed by method name with paper-style fields:
+      int, beta_p, beta_w, sigma, xi_bias_abs, xi_sd, prob_signal, prob_noise, fail
+    """
+    out = {}
 
-    blp_cost = init_storage(study.R_mc)
-    blp_nocost = init_storage(study.R_mc)
-    shrink = init_storage(study.R_mc)
-    lu25 = init_storage(study.R_mc) if include_lu25_map and HAS_LU25_MAP else None
+    markets = simulate_dataset(dgp, T=T, J=J, cfg=cfg, seed=rep_seed)
 
-    print("\n" + "=" * 90)
-    print(f"Cell: {dgp}, T={T}, J={J}, Nt={getattr(cfg, 'Nt', 'NA')}, R0={cfg.R0}, R_mc={study.R_mc}")
-    print("=" * 90)
-
-    for r in range(study.R_mc):
-        rep_seed = int(study.seed + r)
-        np.random.seed(rep_seed)
-
-        markets = simulate_dataset(dgp, T=T, J=J, cfg=cfg, seed=rep_seed)
-        inject_market_size(markets, cfg)
-
-        # True latent objects for paper columns (if present)
+    # true objects (optional in your simulator; if missing, we leave NaN metrics)
+    xi_true = None
+    is_signal = None
+    try:
+        xi_true = stack_true_xi(markets)
+    except Exception:
         xi_true = None
+    try:
+        is_signal = stack_is_signal(markets)
+    except Exception:
         is_signal = None
-        try:
-            xi_true = stack_true_xi(markets)
-        except Exception:
-            pass
-        try:
-            is_signal = stack_is_signal(markets)
-        except Exception:
-            pass
 
-        # 1) BLP + Cost IV
-        try:
-            sigma_hat, beta_hat, extras = run_blp(markets, cfg, iv_type="cost")
-            beta_hat = np.asarray(beta_hat, dtype=float)
+    # -------------------------
+    # 1) BLP + CostIV (paper X/Z)
+    # -------------------------
+    method = "BLP+CostIV"
+    rec = dict(
+        int=float("nan"),
+        beta_p=float("nan"),
+        beta_w=float("nan"),
+        sigma=float("nan"),
+        xi_bias_abs=float("nan"),
+        xi_sd=float("nan"),
+        prob_signal=float("nan"),
+        prob_noise=float("nan"),
+        fail=0,
+    )
+    try:
+        sigma_hat, beta_hat, extras = estimate_blp_sigma_paper(markets, iv_type="cost", R=R_mc)
+        xi_hat = np.asarray(extras["xi_hat"], dtype=float).reshape(-1)
 
-            blp_cost["sigma"][r] = float(sigma_hat)
-            blp_cost["int"][r] = float(beta_hat[0])
-            blp_cost["beta_p"][r] = float(beta_hat[1])
-            blp_cost["beta_w"][r] = float(beta_hat[2])
+        rec["sigma"] = float(sigma_hat)
+        rec["beta_p"] = float(beta_hat[0])
+        rec["beta_w"] = float(beta_hat[1])
+        rec["int"] = float(np.mean(xi_hat))  # paper's bar_xi estimate
 
-            if xi_true is not None and isinstance(extras, dict) and "xi_hat" in extras:
-                xi_abs, xi_sd = compute_xi_bias_sd(extras["xi_hat"], xi_true)
-                blp_cost["xi_bias_abs"][r] = xi_abs
-                blp_cost["xi_sd"][r] = xi_sd
+        if xi_true is not None:
+            mae, sd = mean_abs_and_sd(xi_hat - xi_true)
+            rec["xi_bias_abs"] = mae
+            rec["xi_sd"] = sd
+    except Exception as e:
+        rec["fail"] = 1
+        _warn_exception(f"{method} failed (rep={rep_seed})", e)
+    out[method] = rec
 
-        except Exception as e:
-            blp_cost["fail"][r] = 1
-            _warn_exception(f"BLP+CostIV failed (rep={r}, seed={rep_seed})", e)
+    # -------------------------
+    # 2) BLP - CostIV (paper X/Z)
+    # -------------------------
+    method = "BLP-NoCostIV"
+    rec = dict(
+        int=float("nan"),
+        beta_p=float("nan"),
+        beta_w=float("nan"),
+        sigma=float("nan"),
+        xi_bias_abs=float("nan"),
+        xi_sd=float("nan"),
+        prob_signal=float("nan"),
+        prob_noise=float("nan"),
+        fail=0,
+    )
+    try:
+        sigma_hat, beta_hat, extras = estimate_blp_sigma_paper(markets, iv_type="nocost", R=R_mc)
+        xi_hat = np.asarray(extras["xi_hat"], dtype=float).reshape(-1)
 
-        # 2) BLP - Cost IV
-        try:
-            sigma_hat, beta_hat, extras = run_blp(markets, cfg, iv_type="nocost")
-            beta_hat = np.asarray(beta_hat, dtype=float)
+        rec["sigma"] = float(sigma_hat)
+        rec["beta_p"] = float(beta_hat[0])
+        rec["beta_w"] = float(beta_hat[1])
+        rec["int"] = float(np.mean(xi_hat))
 
-            blp_nocost["sigma"][r] = float(sigma_hat)
-            blp_nocost["int"][r] = float(beta_hat[0])
-            blp_nocost["beta_p"][r] = float(beta_hat[1])
-            blp_nocost["beta_w"][r] = float(beta_hat[2])
+        if xi_true is not None:
+            mae, sd = mean_abs_and_sd(xi_hat - xi_true)
+            rec["xi_bias_abs"] = mae
+            rec["xi_sd"] = sd
+    except Exception as e:
+        rec["fail"] = 1
+        _warn_exception(f"{method} failed (rep={rep_seed})", e)
+    out[method] = rec
 
-            if xi_true is not None and isinstance(extras, dict) and "xi_hat" in extras:
-                xi_abs, xi_sd = compute_xi_bias_sd(extras["xi_hat"], xi_true)
-                blp_nocost["xi_bias_abs"][r] = xi_abs
-                blp_nocost["xi_sd"][r] = xi_sd
+    # -------------------------
+    # 3) Shrinkage (paper X, no constant)
+    # -------------------------
+    method = "Shrinkage"
+    rec = dict(
+        int=float("nan"),
+        beta_p=float("nan"),
+        beta_w=float("nan"),
+        sigma=float("nan"),
+        xi_bias_abs=float("nan"),
+        xi_sd=float("nan"),
+        prob_signal=float("nan"),
+        prob_noise=float("nan"),
+        fail=0,
+    )
+    try:
+        sigma_hat, beta_hat, score_hat, gamma_prob, extras = estimate_shrinkage_sigma_paper(
+            markets, R=R_mc, return_extras=True, **shrink_kwargs
+        )
+        xi_hat = np.asarray(extras["xi_hat"], dtype=float).reshape(-1)
 
-        except Exception as e:
-            blp_nocost["fail"][r] = 1
-            _warn_exception(f"BLP-NoCostIV failed (rep={r}, seed={rep_seed})", e)
+        rec["sigma"] = float(sigma_hat)
+        rec["beta_p"] = float(beta_hat[0])
+        rec["beta_w"] = float(beta_hat[1])
+        rec["int"] = float(np.mean(xi_hat))
 
-        # 3) Shrinkage
-        try:
-            ret = run_shrinkage(markets, study, cfg)
-            if len(ret) == 4:
-                sigma_s, beta_s, _score, gamma_prob = ret
-                extras_s = {}
+        if xi_true is not None:
+            mae, sd = mean_abs_and_sd(xi_hat - xi_true)
+            rec["xi_bias_abs"] = mae
+            rec["xi_sd"] = sd
+
+        if is_signal is not None and gamma_prob is not None:
+            ps, pn = prob_signal_noise(gamma_prob, is_signal)
+            rec["prob_signal"] = ps
+            rec["prob_noise"] = pn
+    except Exception as e:
+        rec["fail"] = 1
+        _warn_exception(f"{method} failed (rep={rep_seed})", e)
+    out[method] = rec
+
+    return out
+
+
+def summarize_methods(method_recs: List[dict], true_params: dict) -> Dict[str, dict]:
+    """
+    method_recs: list of dicts, each dict is method->fields for one replication.
+    Return: method -> summary dict with Bias/SD for each param, and mean xi metrics, etc.
+    """
+    methods = sorted({m for d in method_recs for m in d.keys()})
+    out = {}
+
+    for m in methods:
+        rows = [d[m] for d in method_recs if m in d]
+        out_m = {}
+
+        # parameters with paper bias/sd
+        for k in ["int", "beta_p", "beta_w", "sigma"]:
+            vals = np.array([r[k] for r in rows], dtype=float)
+            ok = np.isfinite(vals)
+            if np.any(ok):
+                bias = float(np.mean(vals[ok] - true_params[k]))
+                sd = float(np.std(vals[ok], ddof=1))
             else:
-                sigma_s, beta_s, _score, gamma_prob, extras_s = ret
+                bias, sd = float("nan"), float("nan")
+            out_m[f"{k}_bias"] = bias
+            out_m[f"{k}_sd"] = sd
 
-            beta_s = np.asarray(beta_s, dtype=float)
+        # xi metrics: average across replications
+        for k in ["xi_bias_abs", "xi_sd", "prob_signal", "prob_noise"]:
+            vals = np.array([r[k] for r in rows], dtype=float)
+            ok = np.isfinite(vals)
+            out_m[k] = float(np.mean(vals[ok])) if np.any(ok) else float("nan")
 
-            shrink["sigma"][r] = float(sigma_s)
-            shrink["int"][r] = float(beta_s[0])
-            shrink["beta_p"][r] = float(beta_s[1])
-            shrink["beta_w"][r] = float(beta_s[2])
+        out_m["fail_rate"] = float(np.mean([r["fail"] for r in rows]))
+        out[m] = out_m
 
-            # Prob columns (paper) only meaningful for sparse DGPs
-            if gamma_prob is not None and is_signal is not None and dgp in ["DGP1", "DGP2"]:
-                ps, pn = compute_prob_signal_noise(gamma_prob, is_signal)
-                shrink["prob_signal"][r] = ps
-                shrink["prob_noise"][r] = pn
+    return out
 
-            # shrinkage xi metrics require extras_s["xi_hat"] or delta_hat/X; leave NaN unless provided
-            if xi_true is not None and isinstance(extras_s, dict) and "xi_hat" in extras_s:
-                xi_abs, xi_sd = compute_xi_bias_sd(extras_s["xi_hat"], xi_true)
-                shrink["xi_bias_abs"][r] = xi_abs
-                shrink["xi_sd"][r] = xi_sd
 
-        except Exception as e:
-            shrink["fail"][r] = 1
-            _warn_exception(f"Shrinkage failed (rep={r}, seed={rep_seed})", e)
+def write_outputs(out_dir: Path, grid: GridPoint, summary: Dict[str, dict], true_params: dict) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-        # 4) Lu25 MAP (optional)
-        if include_lu25_map and HAS_LU25_MAP and lu25 is not None:
-            try:
-                lu_res = run_lu25_map(markets, study, cfg, rep_seed=rep_seed)
-                sigma_lu = float(lu_res["sigma_hat"])
-                beta_lu = np.asarray(lu_res["beta_hat"], dtype=float)
+    # summary.csv (long format)
+    lines = ["dgp,T,J,method,metric,value"]
+    for method, sm in summary.items():
+        for k, v in sm.items():
+            lines.append(f"{grid.dgp},{grid.T},{grid.J},{method},{k},{v}")
+    (out_dir / "summary.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-                lu25["sigma"][r] = sigma_lu
-                lu25["int"][r] = float(beta_lu[0])
-                lu25["beta_p"][r] = float(beta_lu[1])
-                lu25["beta_w"][r] = float(beta_lu[2])
+    # paper_table_like.csv (wide-ish, bias/sd rows)
+    # rows: Bias, SD
+    header = [
+        "DGP",
+        "T",
+        "J",
+        "Method",
+        "Row",
+        "Int",
+        "beta_p",
+        "beta_w",
+        "sigma",
+        "xi_mean_abs_error",
+        "xi_sd_error",
+        "Prob_signal",
+        "Prob_noise",
+        "FailRate",
+    ]
+    rows = [",".join(header)]
+    for method, sm in summary.items():
+        # Bias row
+        rows.append(
+            ",".join(
+                [
+                    grid.dgp,
+                    str(grid.T),
+                    str(grid.J),
+                    method,
+                    "Bias",
+                    str(sm["int_bias"]),
+                    str(sm["beta_p_bias"]),
+                    str(sm["beta_w_bias"]),
+                    str(sm["sigma_bias"]),
+                    str(sm["xi_bias_abs"]),
+                    str(sm["xi_sd"]),
+                    str(sm["prob_signal"]),
+                    str(sm["prob_noise"]),
+                    str(sm["fail_rate"]),
+                ]
+            )
+        )
+        # SD row
+        rows.append(
+            ",".join(
+                [
+                    grid.dgp,
+                    str(grid.T),
+                    str(grid.J),
+                    method,
+                    "SD",
+                    str(sm["int_sd"]),
+                    str(sm["beta_p_sd"]),
+                    str(sm["beta_w_sd"]),
+                    str(sm["sigma_sd"]),
+                    "",  # paper lists xi as metrics; SD row for xi columns usually blank; keep blank.
+                    "",
+                    "",
+                    "",
+                    str(sm["fail_rate"]),
+                ]
+            )
+        )
 
-            except Exception as e:
-                lu25["fail"][r] = 1
-                _warn_exception(f"Lu25MAP failed (rep={r}, seed={rep_seed})", e)
+    (out_dir / "paper_table_like.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
 
-        if (r + 1) % max(1, study.R_mc // 10) == 0 or (r + 1) == study.R_mc:
-            print(f"  progress: {r + 1}/{study.R_mc}", flush=True)
+    # Also dump a small config snapshot for reproducibility
+    cfg_dump = {
+        "dgp": grid.dgp,
+        "T": grid.T,
+        "J": grid.J,
+        "true_params": true_params,
+        "timestamp": _now(),
+    }
+    (out_dir / "config.json").write_text(json.dumps(cfg_dump, indent=2), encoding="utf-8")
 
-    # Summaries
-    def pack(method_store: Dict[str, np.ndarray]) -> Dict[str, Dict[str, float]]:
-        return {
-            "int": summarize_param(method_store["int"], true_params["int"]),
-            "beta_p": summarize_param(method_store["beta_p"], true_params["beta_p"]),
-            "beta_w": summarize_param(method_store["beta_w"], true_params["beta_w"]),
-            "sigma": summarize_param(method_store["sigma"], true_params["sigma"]),
-            "xi_bias_abs": summarize_metric(method_store["xi_bias_abs"]),
-            "xi_sd": summarize_metric(method_store["xi_sd"]),
-            "prob_signal": summarize_metric(method_store["prob_signal"]),
-            "prob_noise": summarize_metric(method_store["prob_noise"]),
+
+def _set_thread_env(threads: int) -> None:
+    # Keep each worker from spawning its own 16 threads.
+    # This matters a lot when you run 16 processes.
+    t = str(max(1, int(threads)))
+    os.environ["OMP_NUM_THREADS"] = t
+    os.environ["MKL_NUM_THREADS"] = t
+    os.environ["OPENBLAS_NUM_THREADS"] = t
+    os.environ["NUMEXPR_NUM_THREADS"] = t
+    os.environ["TF_NUM_INTRAOP_THREADS"] = t
+    os.environ["TF_NUM_INTEROP_THREADS"] = "1"
+
+
+def _worker_run_one_rep(args_tuple):
+    """
+    Top-level worker function for multiprocessing.
+    Must be importable/picklable (macOS spawn).
+    """
+    dgp, T, J, rep_seed, R_mc, shrink_kwargs, threads_per_job = args_tuple
+    _set_thread_env(int(threads_per_job))
+
+    cfg = SimConfig()
+    return run_one_rep(
+        dgp=dgp,
+        T=T,
+        J=J,
+        cfg=cfg,
+        rep_seed=int(rep_seed),
+        R_mc=int(R_mc),
+        shrink_kwargs=dict(shrink_kwargs),
+    )
+
+
+def _run_reps_parallel(tasks: List[tuple], n_jobs: int) -> List[Dict[str, dict]]:
+    results: List[Dict[str, dict]] = [None] * len(tasks)  # type: ignore
+
+    with ProcessPoolExecutor(max_workers=int(n_jobs)) as ex:
+        fut_to_idx = {ex.submit(_worker_run_one_rep, task): i for i, task in enumerate(tasks)}
+        for fut in as_completed(fut_to_idx):
+            i = fut_to_idx[fut]
+            results[i] = fut.result()
+
+    return results
+
+#updated code to use multipprocess/mutilthread for high computation.
+#warning this is on a mac chip max4
+def main(argv: Optional[List[str]] = None) -> int:
+    args = parse_args(argv)
+    out_root = Path(args.out)
+
+    if args.smoke:
+        n_reps = 5
+        R_mc = 50
+    else:
+        n_reps = int(args.n_reps)
+        R_mc = int(args.R_mc)
+
+    # macOS safety: use spawn (avoids fork issues with TF/BLAS)
+    try:
+        mp.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+
+    grid_points = [
+        GridPoint("DGP1", 25, 15),
+        GridPoint("DGP2", 25, 15),
+        GridPoint("DGP3", 25, 15),
+        GridPoint("DGP4", 25, 15),
+    ]
+
+    shrink_kwargs = dict(
+        n_iter=int(args.shrink_n_iter),
+        burn=int(args.shrink_burn),
+        thin=int(args.shrink_thin),
+    )
+
+    for gp in grid_points:
+        cfg = SimConfig()
+        true_params = {
+            "int": float(cfg.xi_bar_star),
+            "sigma": float(cfg.sigma_star),
+            "beta_p": float(cfg.beta_p_star),
+            "beta_w": float(cfg.beta_w_star),
         }
 
-    summaries: Dict[str, Dict[str, Dict[str, float]]] = {
-        "BLP+CostIV": pack(blp_cost),
-        "BLP-NoCostIV": pack(blp_nocost),
-        "Shrinkage": pack(shrink),
-    }
-    if include_lu25_map and HAS_LU25_MAP and lu25 is not None:
-        summaries["Lu25MAP"] = pack(lu25)
+        # seeds per replication
+        rep_seeds = [int(args.seed) + 10_000 * r + 123 for r in range(n_reps)]
 
-    # Print tables (parameters)
-    print_method_table("BLP + Cost IV", summaries["BLP+CostIV"], true_params)
-    print_method_table("BLP − Cost IV", summaries["BLP-NoCostIV"], true_params)
-    print_method_table("Shrinkage", summaries["Shrinkage"], true_params)
-    if include_lu25_map and HAS_LU25_MAP and "Lu25MAP" in summaries:
-        print_method_table("Lu25 MAP", summaries["Lu25MAP"], true_params)
+        # run reps (possibly parallel)
+        if int(args.n_jobs) <= 1:
+            reps = [
+                run_one_rep(
+                    dgp=gp.dgp,
+                    T=gp.T,
+                    J=gp.J,
+                    cfg=cfg,
+                    rep_seed=s,
+                    R_mc=R_mc,
+                    shrink_kwargs=shrink_kwargs,
+                )
+                for s in rep_seeds
+            ]
+        else:
+            # dispatch tasks across processes
+            tasks = [
+                (gp.dgp, gp.T, gp.J, s, R_mc, shrink_kwargs, int(args.threads_per_job))
+                for s in rep_seeds
+            ]
+            reps = _run_reps_parallel(tasks, n_jobs=int(args.n_jobs))
 
-    # Print paper extras quick view
-    print("\nPaper-style extras (means over reps):")
-    for m in ["BLP+CostIV", "BLP-NoCostIV", "Shrinkage"]:
-        xi_b = summaries[m]["xi_bias_abs"]["mean"]
-        xi_s = summaries[m]["xi_sd"]["mean"]
-        ps = summaries[m]["prob_signal"]["mean"]
-        pn = summaries[m]["prob_noise"]["mean"]
-        print(f"  {m:12s}  xi_abs_bias={xi_b:.4f}  xi_sd={xi_s:.4f}  Prob_signal={ps:.3f}  Prob_noise={pn:.3f}")
+        summary = summarize_methods(reps, true_params=true_params)
+        out_dir = out_root / f"{gp.dgp}_T{gp.T}_J{gp.J}"
+        write_outputs(out_dir, gp, summary, true_params)
 
-    return summaries
-
-
-# -----------------------------------------------------------------------------
-# CLI
-# -----------------------------------------------------------------------------
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Replicate Lu(25) Section 4 simulation study.")
-    p.add_argument("--out", type=str, default=None, help="Output directory (default: results/part2/<timestamp>).")
-    p.add_argument("--smoke", action="store_true", help="Run a small configuration quickly (sanity check).")
-    p.add_argument("--cpu", action="store_true", help="Force CPU (avoid Metal/GPU RNG differences).")
-
-    p.add_argument("--R-mc", type=int, default=None, help="Monte Carlo replications (overrides default).")
-    p.add_argument("--seed", type=int, default=None, help="Base seed (rep r uses seed + r).")
-
-    p.add_argument("--include-lu25-map", action="store_true", help="Also run optional Lu25 MAP estimator (if available).")
-
-    p.add_argument("--shrink-n-iter", type=int, default=None)
-    p.add_argument("--shrink-burn", type=int, default=None)
-    p.add_argument("--shrink-v0", type=float, default=None)
-    p.add_argument("--shrink-v1", type=float, default=None)
-
-    p.add_argument("--grid", type=str, default=None, help="Grid override: 'DGP1:25:15,DGP2:25:15' etc.")
-    return p
-
-
-def parse_grid(s: str) -> List[Tuple[str, int, int]]:
-    grid: List[Tuple[str, int, int]] = []
-    for token in s.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        parts = token.split(":")
-        if len(parts) != 3:
-            raise ValueError(f"Bad grid token '{token}'. Expected DGP:T:J")
-        dgp, T, J = parts[0], int(parts[1]), int(parts[2])
-        grid.append((dgp, T, J))
-    return grid
-
-
-def main(argv: List[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
-
-    if args.cpu:
-        os.environ["TF_METAL_DEVICE_DISABLED"] = "1"
-        try:
-            import tensorflow as tf  # noqa: F401
-            tf.config.set_visible_devices([], "GPU")
-        except Exception:
-            pass
-
-    out_dir = Path(args.out) if args.out else (Path("results") / "part2" / f"lu25_section4_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-    ensure_dir(out_dir)
-
-    logger = TeeLogger(out_dir / "run.log")
-    try:
-        logger.write("Lu(25) Section 4 replication\n")
-        logger.write(f"TIME: {datetime.now().isoformat()}\n")
-        logger.write(f"OUT:  {out_dir.resolve()}\n")
-        logger.write(f"CPU_ONLY: {bool(args.cpu)}\n")
-        logger.write(f"HAS_LU25_MAP: {HAS_LU25_MAP}\n\n")
-
-        study = StudyConfig()
-        cfg = SimConfig()
-
-        grid = DEFAULT_GRID
-        if args.smoke:
-            study.R_mc = 3
-            study.seed = 0
-            study.shrink_n_iter = 100
-            study.shrink_burn = 50
-            grid = [("DGP1", 5, 10)]
-
-        if args.R_mc is not None:
-            study.R_mc = int(args.R_mc)
-        if args.seed is not None:
-            study.seed = int(args.seed)
-
-        if args.shrink_n_iter is not None:
-            study.shrink_n_iter = int(args.shrink_n_iter)
-        if args.shrink_burn is not None:
-            study.shrink_burn = int(args.shrink_burn)
-        if args.shrink_v0 is not None:
-            study.shrink_v0 = float(args.shrink_v0)
-        if args.shrink_v1 is not None:
-            study.shrink_v1 = float(args.shrink_v1)
-
-        if args.grid:
-            grid = parse_grid(args.grid)
-
-        sim_keys = ["R0", "Nt", "sparse_frac", "sigma_star", "beta_p_star", "beta_w_star", "int_star"]
-        with open(out_dir / "config.json", "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "study": study.__dict__,
-                    "sim": {k: getattr(cfg, k, None) for k in sim_keys},
-                    "grid": grid,
-                    "include_lu25_map": bool(args.include_lu25_map),
-                    "cpu_only": bool(args.cpu),
-                },
-                f,
-                indent=2,
-                default=str,
+        print(f"\n=== {gp.dgp}  T={gp.T}  J={gp.J}  reps={n_reps}  R={R_mc}  jobs={args.n_jobs} ===")
+        for method, sm in summary.items():
+            print(
+                f"{method:12s}  "
+                f"bias(beta_p)={sm['beta_p_bias']:+.3f} sd={sm['beta_p_sd']:.3f}  "
+                f"bias(beta_w)={sm['beta_w_bias']:+.3f} sd={sm['beta_w_sd']:.3f}  "
+                f"bias(sig)={sm['sigma_bias']:+.3f} sd={sm['sigma_sd']:.3f}  "
+                f"bias(Int)={sm['int_bias']:+.3f} sd={sm['int_sd']:.3f}  "
+                f"xi_mae={sm['xi_bias_abs']:.3f} xi_sd={sm['xi_sd']:.3f}  "
+                f"fail={sm['fail_rate']:.2%}"
             )
 
-        summary_csv = out_dir / "summary.csv"
-        paper_csv = out_dir / "paper_table_like.csv"
-        if summary_csv.exists():
-            summary_csv.unlink()
-        if paper_csv.exists():
-            paper_csv.unlink()
-
-        for (dgp, T, J) in grid:
-            cell_key = f"{dgp}_T{T}_J{J}"
-            logger.write(f"\n=== RUN CELL {cell_key} ===\n")
-
-            summaries = run_cell(
-                dgp=dgp,
-                T=int(T),
-                J=int(J),
-                study=study,
-                cfg=cfg,
-                include_lu25_map=bool(args.include_lu25_map),
-            )
-
-            save_summary_csv(summary_csv, cell_key, summaries)
-
-            # paper-like rows
-            for method in ["BLP+CostIV", "BLP-NoCostIV", "Shrinkage"] + (["Lu25MAP"] if "Lu25MAP" in summaries else []):
-                save_paper_table_like(paper_csv, cell_key, method, summaries[method])
-
-        logger.write("\nDONE.\n")
-        logger.write(f"Summary CSV: {summary_csv.resolve()}\n")
-        logger.write(f"Paper CSV:   {paper_csv.resolve()}\n")
-        return 0
-
-    finally:
-        logger.close()
+    return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
