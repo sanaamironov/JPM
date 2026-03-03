@@ -23,6 +23,7 @@ dev = ["pytest", "pytest-cov"]
 jpmq3-run-all = "jpm_q3.cli.run_all:main"
 jpmq3-replicate-lu25 = "jpm_q3.cli.replicate_lu25:main"
 jpmq3-format-lu25-tables = "jpm_q3.lu25.experiments.format_section4_tables:main"
+jpmq3-run-lu25-choicelearn = "choice_learn_ext.experiments.lu25_section4_choicelearn:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
