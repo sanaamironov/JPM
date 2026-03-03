@@ -1,163 +1,177 @@
-# Lu (2025) – Section 4 Replication
+# Lu & Shimizu (2025) Section 4 Replication
 
-This folder contains a **standalone Monte Carlo replication** of the simulation results in **Lu (2025), Section 4**, focusing on:
+This folder contains the Part 2 implementation for **Lu & Shimizu (2025)** (Section 4 simulation study) and the tooling needed to:
 
-- Standard BLP with valid cost instruments (BLP+IV)
-- BLP without cost instruments (BLP–IV)
-- A shrinkage-based estimator under sparse market–product demand shocks
+1) **Simulate** synthetic markets with market–product demand shocks and (optionally) price endogeneity  
+2) **Estimate** demand under different assumptions (BLP with/without IV, shrinkage with sparse shocks)  
+3) **Aggregate** Monte Carlo results into paper-style tables  
+4) **Debug** behavior on a single dataset when replication results differ from the paper
 
-The goal is to reproduce the *qualitative and quantitative patterns* emphasized in the paper:
-- Endogeneity bias in BLP without valid IVs
-- Improvement from valid cost IVs
-- Further gains from exploiting sparsity in demand shocks
-
-This code is intentionally **self-contained and explicit**, prioritizing transparency over abstraction.
+If you only want the “reviewer path,” use the CLI commands shown below.  
+If you want to run modules directly (without CLI), this README is the canonical place to do it.
 
 ---
 
-## High-level overview
+## Quickstart (reviewer path)
 
-Each Monte Carlo replication proceeds as follows:
+### A) Run the replication (compute)
 
-1. **Simulate markets** under a specified Data Generating Process (DGP)
-   - Discrete-choice demand with random coefficients
-   - Endogenous prices
-   - Sparse market–product demand shocks
-2. **Estimate demand** using:
-   - BLP with cost IVs
-   - BLP without cost IVs
-   - Shrinkage estimator exploiting sparsity
-3. **Aggregate results** across replications
-   - Mean, bias, and dispersion of key parameters
-4. **Compare estimators** in the spirit of Lu (2025), Section 4
-
-The main entry point is `run_mc.py`.
-
----
-
-## Directory structure
-```
-replication_lu25/
-├── run_mc.py # Main Monte Carlo replication script (high computation time)
-├── run_single_replication.py # Single-replication debug runner
-├── test_blp.py # Lightweight sanity checks
-├── sanity_checks.py # Diagnostics for sparsity and simulation
-│
-├── estimators/
-│ ├── blp.py # BLP contraction + IV/GMM estimation
-│ └── shrinkage.py # Shrinkage estimator under sparse shocks
-│
-├── simulation/
-│ ├── config.py # Simulation configuration dataclasses
-│ ├── dgp.py # Data-generating processes (DGP1–DGP4)
-│ ├── market.py # Single-market simulation logic
-│ └── simulate.py # Dataset-level simulation wrapper
-│
-├── results/ # Generated outputs (not tracked by git)
-```
-
-
----
-
-## Data Generating Processes (DGPs)
-
-The DGPs are defined in `simulation/dgp.py`.
-
-Key features:
-
-- Markets indexed by `t = 1,...,T`
-- Products indexed by `j = 1,...,J`
-- Utility: $u_{ijt} = \delta_{jt} + \mu_{ijt} + \varepsilon_{ijt}$
-- Mean utility: $\delta_{jt} = X_{jt}\beta + \xi_{jt}$
-
-### Sparse market–product shocks
-
-The demand shock is decomposed as: $\xi_{jt} = \bar{\xi}_t + \eta_{jt}$
-
-- `η_{jt}` is **sparse**:
-  - Only a fraction of products have nonzero deviations
-  - Remaining products have zero shock
-- This matches the motivation in Lu (2025): many products share common shocks, with only a few deviating.
-
-Different DGPs vary:
-- Degree of sparsity
-- Strength of endogeneity
-- Correlation structure
-
----
-
-## Estimators
-
-### 1. BLP with cost IVs (BLP+IV)
-
-Implemented in `estimators/blp.py`.
-
-- Standard Berry (1994) contraction mapping
-- GMM/2SLS objective
-- Cost shifters used as valid instruments
-- Serves as the main benchmark
-
-### 2. BLP without cost IVs (BLP–IV)
-
-Also in `estimators/blp.py`.
-
-- Cost instruments removed
-- Identification relies only on included characteristics
-- Included as a deliberately misspecified benchmark to illustrate endogeneity bias
-
-### 3. Shrinkage estimator
-
-Implemented in `estimators/shrinkage.py`.
-
-- Extends the BLP structure by imposing **shrinkage on demand shocks**
-- Motivated by sparsity in `η_{jt}`
-- Uses a spike-and-slab–style mechanism to regularize latent shocks
-- Estimated jointly with demand parameters
-
-This estimator is designed to exploit information that standard BLP ignores.
-
----
-
-## Main replication script
-
-### `run_mc_copy.py`
-
-This is the **official replication driver**.
-
-What it does:
-
-- Loops over:
-  - DGPs (e.g. DGP1–DGP4)
-  - Market/product sizes `(T, J)`
-  - Monte Carlo replications
-- For each replication:
-  - Simulates a dataset
-  - Estimates all three models
-  - Stores parameter estimates
-- Aggregates results into summary statistics:
-  - Mean
-  - Bias
-  - Standard deviation
-
-The structure mirrors the tables in Lu (2025), Section 4.
-
----
-
-## Running the replication
-
-### Environment
-
-This code is intended to be run in a TensorFlow-enabled conda environment.
+Smoke test:
 
 ```bash
-# Make environment (Required packages are listed in the repository-level environment.yml)
+jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke
+```
 
-conda env create -f environment.yml
+Example larger run:
+```
+jpmq3-replicate-lu25 \
+  --out results/part2/lu25_section4 \
+  --n-reps 50 --R-mc 200 --seed 0 \
+  --n-jobs 4 --threads-per-job 1 \
+  --shrink-n-iter 800 --shrink-burn 400 --shrink-thin 2
+  ```
 
-# Run a single simulation
 
-python run_single_replication.py
-
-# Replicate Table results from section 4:
-
-python run_mc.py
+Run a single cell only:
+jpmq3-replicate-lu25 \
+  --out results/part2/lu25_onecell \
+  --grid DGP2:25:15 --n-reps 10 --R-mc 50
+  
+  
+  Format combined tables (no recomputation)
+  
+  jpmq3-format-lu25-tables --in results/part2/lu25_section4
+  
+  This reads per-cell output files and produces combined “paper-like” CSV tables.
+  
+  ## How to run without the CLI
+  Everything exposed through CLI is also runnable as Python modules.
+  ### Run replication directly
+  python -m jpm_q3.lu25.experiments.replicate_section4 --smoke --out results/part2/lu25_smoke
+  
+  Single-cell direct run:
+  python -m jpm_q3.lu25.experiments.replicate_section4 \
+    --out results/part2/lu25_onecell \
+    --grid DGP2:25:15 --n-reps 10 --R-mc 50
+    
+    
+    Run table formatter directly
+    python -m jpm_q3.lu25.experiments.format_section4_tables --in results/part2/lu25_section4
+    
+    Run a single replication debug tool
+    This runs one dataset and prints/exports a compact single-run diagnostic:
+  
+  python -m jpm_q3.lu25.experiments.run_single_replication \
+    --dgp DGP2 --T 25 --J 15 --seed 123 --R-mc 50
+    
+    Optional MAP benchmark:
+    python -m jpm_q3.lu25.experiments.run_single_replication --include-map
+    
+   ---
+    ## What is “canonical” vs “debug-only” 
+    Canonical pipeline
+    experiments/replicate_section4.py
+    The only script intended to produce the simulation study results. This is what the CLI calls.
+    
+    experiments/format_section4_tables.py
+    Post-processing only: merges outputs from the canonical runner into combined paper-style tables.
+    
+    Debug tools
+    experiments/run_single_replication.py  
+    For diagnosing behavior on one simulated dataset. Not used to generate paper tables.
+    
+    Deprecated
+    Any scripts moved into _deprecate/ are not part of the final pipeline and are kept only for reference.
+    
+    
+    Folder map
+    experiments/
+    
+    Everything that orchestrates simulations and writes outputs.
+    
+    replicate_section4.py (canonical)
+    Runs Monte Carlo replications, writes per-cell outputs. Implements paper-aligned reporting choices (see below).
+    
+    format_section4_tables.py (canonical post-processing)
+    Reads paper_table_like.csv and summary.csv per cell and writes combined tables.
+    
+    run_single_replication.py (debug)
+    One dataset → run estimators → export small diagnostics. Optional MAP benchmark.
+    
+    simulation/
+    
+    Synthetic data generation for Lu(25) Section 4.
+    
+    config.py
+    SimConfig: true parameter values and DGP settings (sparsity fraction, endogeneity strength, etc.).
+    
+    dgp.py
+    Implements DGP1–DGP4 by generating:
+    
+    eta_star (sparse/dense shock component)
+    
+    alpha_star (price endogeneity component correlated with shocks)
+    
+    market.py
+    Simulates one market: draws product characteristics, shocks, endogenous prices, and demand shares.
+    
+    simulate.py
+    Simulates a dataset: list of markets, each a dict with keys required by estimators.
+    
+    estimators/
+    
+    Estimator components used by the experiments.
+    
+    blp.py
+    BLP building blocks: contraction mapping for delta, 2SLS/GMM utilities.
+    
+    shrinkage.py
+    TFP MCMC shrinkage regression core:
+    
+    input: delta_vec, X
+    
+    output: posterior mean beta, posterior inclusion probs gamma_prob, score, acceptance rate
+    Sigma search and table reporting are handled in the experiment runner.
+    
+    Optional / benchmark:
+    
+    lu25_map.py
+    Optional MAP-style estimator (not required by the paper table replication). Used only when explicitly enabled in the single-rep debug tool.
+    
+    
+    
+    Outputs and how to read them
+    
+    For each cell folder DGPk_T{T}_J{J}/:
+    
+    paper_table_like.csv
+    Two rows per method:
+    
+    Row=Bias: bias of Int, beta_p, beta_w, sigma + xi/probability metrics
+    
+    Row=SD: sd of Int, beta_p, beta_w, sigma (xi/probability columns blank or NaN by design)
+    
+    summary.csv
+    Long format, suitable for programmatic slicing/plotting.
+    
+    The formatter combines these into:
+    
+    paper_table_like_combined.csv (stacked across cells)
+    
+    paper_table_wide.csv (pivoted, easy to paste into a report)
+    
+    summary_long_combined.csv (if present)
+    
+    
+    Performance notes
+    
+    Delta inversion (contraction mapping) and shrinkage MCMC dominate runtime.
+    
+    Outputs are written after a grid cell finishes (not after every replication).
+    
+    For multi-core runs on macOS:
+    
+    use --n-jobs > 1
+    
+    keep --threads-per-job 1 to avoid oversubscription
+    """

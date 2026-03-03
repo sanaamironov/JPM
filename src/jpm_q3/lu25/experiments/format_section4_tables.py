@@ -52,10 +52,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-
 # -----------------------------------------------------------------------------
 # Types
 # -----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class GridPoint:
@@ -72,8 +72,11 @@ class GridPoint:
 # CLI
 # -----------------------------------------------------------------------------
 
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Format/merge Lu(25) Section 4 outputs into paper tables.")
+    p = argparse.ArgumentParser(
+        description="Format/merge Lu(25) Section 4 outputs into paper tables."
+    )
     p.add_argument(
         "--in",
         dest="in_dir",
@@ -144,13 +147,16 @@ def _detect_grid_from_folders(in_root: Path) -> List[GridPoint]:
 # CSV utilities
 # -----------------------------------------------------------------------------
 
+
 def _read_csv_rows(path: Path) -> List[Dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         return list(reader)
 
 
-def _write_csv(path: Path, fieldnames: Sequence[str], rows: Iterable[Dict[str, object]]) -> None:
+def _write_csv(
+    path: Path, fieldnames: Sequence[str], rows: Iterable[Dict[str, object]]
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(fieldnames))
@@ -175,7 +181,10 @@ def _to_float(x: object) -> Optional[float]:
 # Core logic
 # -----------------------------------------------------------------------------
 
-def combine_paper_table_like(in_root: Path, grid: List[GridPoint]) -> Tuple[List[Dict[str, object]], List[str]]:
+
+def combine_paper_table_like(
+    in_root: Path, grid: List[GridPoint]
+) -> Tuple[List[Dict[str, object]], List[str]]:
     """
     Reads each cell's paper_table_like.csv and returns combined rows.
 
@@ -205,7 +214,9 @@ def combine_paper_table_like(in_root: Path, grid: List[GridPoint]) -> Tuple[List
     return combined, warnings
 
 
-def combine_summary_long(in_root: Path, grid: List[GridPoint]) -> Tuple[List[Dict[str, object]], List[str]]:
+def combine_summary_long(
+    in_root: Path, grid: List[GridPoint]
+) -> Tuple[List[Dict[str, object]], List[str]]:
     """
     Combines per-cell summary.csv (long format) into one file, if present.
 
@@ -279,7 +290,17 @@ def pivot_wide_paper_table(rows: List[Dict[str, object]]) -> List[Dict[str, obje
         out["Row"] = r.get("Row", "")
 
         # numeric-ish columns as strings are fine, but we can normalize "nan" -> empty
-        for k in ["Int", "beta_p", "beta_w", "sigma", "xi_mean_abs_error", "xi_sd_error", "Prob_signal", "Prob_noise", "FailRate"]:
+        for k in [
+            "Int",
+            "beta_p",
+            "beta_w",
+            "sigma",
+            "xi_mean_abs_error",
+            "xi_sd_error",
+            "Prob_signal",
+            "Prob_noise",
+            "FailRate",
+        ]:
             v = r.get(k, "")
             f = _to_float(v)
             out[k] = "" if f is None else f
@@ -303,6 +324,7 @@ def pivot_wide_paper_table(rows: List[Dict[str, object]]) -> List[Dict[str, obje
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
+
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
@@ -337,7 +359,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[format][WARN] {w}")
 
     if not combined_rows:
-        raise ValueError("No paper_table_like.csv rows found. Did replicate_section4.py finish successfully?")
+        raise ValueError(
+            "No paper_table_like.csv rows found. Did replicate_section4.py finish successfully?"
+        )
 
     combined_path = out_root / "paper_table_like_combined.csv"
     # Fieldnames: preserve the canonical columns + a couple extras
@@ -393,7 +417,16 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if summary_rows:
         summary_path = out_root / "summary_long_combined.csv"
-        summary_fields = ["cell", "source_path", "dgp", "T", "J", "method", "metric", "value"]
+        summary_fields = [
+            "cell",
+            "source_path",
+            "dgp",
+            "T",
+            "J",
+            "method",
+            "metric",
+            "value",
+        ]
         _write_csv(summary_path, summary_fields, summary_rows)
         print(f"[format] wrote {summary_path}")
 
