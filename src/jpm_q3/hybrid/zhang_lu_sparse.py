@@ -1,5 +1,5 @@
 """zhang_sparse_choice_learn.py
-
+need to clean this up since its the old unrefactor code and its not matching the lu25 path
 Zhang-Sparse (Lu25-aligned) estimator implemented using DeepHalo (Zhang 2025)
 with a Lu(2025)-style sparse market×product shock layer.
 
