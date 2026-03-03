@@ -33,16 +33,30 @@ jpmq3-replicate-lu25 \
 
 
 Run a single cell only:
-jpmq3-replicate-lu25 \
+ ```jpmq3-replicate-lu25 \
   --out results/part2/lu25_onecell \
   --grid DGP2:25:15 --n-reps 10 --R-mc 50
-  
+   ```
   
   Format combined tables (no recomputation)
   
   jpmq3-format-lu25-tables --in results/part2/lu25_section4
   
   This reads per-cell output files and produces combined “paper-like” CSV tables.
+  
+  
+  run a full grid with 16 cells:
+  
+   ```jpmq3-replicate-lu25 \
+    --out results/part2/lu25_fullgrid \
+    --n-reps 50 --R-mc 200 --seed 0 \
+    --n-jobs 4 --threads-per-job 1 \
+    --shrink-n-iter 800 --shrink-burn 400 --shrink-thin 2 \
+    --grid DGP1:25:5,DGP1:100:5,DGP1:25:15,DGP1:100:15,\
+      DGP2:25:5,DGP2:100:5,DGP2:25:15,DGP2:100:15,\
+      DGP3:25:5,DGP3:100:5,DGP3:25:15,DGP3:100:15,\
+      DGP4:25:5,DGP4:100:5,DGP4:25:15,DGP4:100:15 ```
+  
   
   ## How to run without the CLI
   Everything exposed through CLI is also runnable as Python modules.
