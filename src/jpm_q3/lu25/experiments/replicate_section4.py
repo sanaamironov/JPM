@@ -53,20 +53,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
-
-# --- Project imports ---
-from ..simulation.config import SimConfig
-from ..simulation.simulate import simulate_dataset
 
 # BLP primitives
 from ..estimators.blp import compute_delta_vec, iv_2sls_beta  # type: ignore
@@ -74,10 +70,14 @@ from ..estimators.blp import compute_delta_vec, iv_2sls_beta  # type: ignore
 # Shrinkage primitives (TFP MCMC)
 from ..estimators.shrinkage import shrinkage_fit_beta_given_sigma  # type: ignore
 
+# --- Project imports ---
+from ..simulation.config import SimConfig
+from ..simulation.simulate import simulate_dataset
 
 # -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class GridPoint:
@@ -110,10 +110,21 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Lu(25) Section 4 replication runner")
 
     p.add_argument("--out", type=str, required=True, help="Output directory")
-    p.add_argument("--seed", type=int, default=0, help="Base seed for replication seeds")
-    p.add_argument("--R-mc", type=int, default=200, help="Num simulation draws R used in delta computation")
-    p.add_argument("--n-reps", type=int, default=50, help="Monte Carlo replications per grid cell")
-    p.add_argument("--smoke", action="store_true", help="Small/fast run (overrides some settings)")
+    p.add_argument(
+        "--seed", type=int, default=0, help="Base seed for replication seeds"
+    )
+    p.add_argument(
+        "--R-mc",
+        type=int,
+        default=200,
+        help="Num simulation draws R used in delta computation",
+    )
+    p.add_argument(
+        "--n-reps", type=int, default=50, help="Monte Carlo replications per grid cell"
+    )
+    p.add_argument(
+        "--smoke", action="store_true", help="Small/fast run (overrides some settings)"
+    )
 
     p.add_argument(
         "--grid",
@@ -123,13 +134,32 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
 
     # multiprocessing knobs
-    p.add_argument("--n-jobs", type=int, default=1, help="Number of worker processes (parallelize reps)")
-    p.add_argument("--threads-per-job", type=int, default=1, help="Threads used inside each worker process")
+    p.add_argument(
+        "--n-jobs",
+        type=int,
+        default=1,
+        help="Number of worker processes (parallelize reps)",
+    )
+    p.add_argument(
+        "--threads-per-job",
+        type=int,
+        default=1,
+        help="Threads used inside each worker process",
+    )
 
     # shrinkage knobs
-    p.add_argument("--shrink-n-iter", type=int, default=800, help="Shrinkage MCMC total iters")
-    p.add_argument("--shrink-burn", type=int, default=400, help="Shrinkage MCMC burn-in iters")
-    p.add_argument("--shrink-thin", type=int, default=1, help="Shrinkage thinning (keep every k-th draw)")
+    p.add_argument(
+        "--shrink-n-iter", type=int, default=800, help="Shrinkage MCMC total iters"
+    )
+    p.add_argument(
+        "--shrink-burn", type=int, default=400, help="Shrinkage MCMC burn-in iters"
+    )
+    p.add_argument(
+        "--shrink-thin",
+        type=int,
+        default=1,
+        help="Shrinkage thinning (keep every k-th draw)",
+    )
 
     return p.parse_args(argv)
 
@@ -137,6 +167,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 # -----------------------------------------------------------------------------
 # Helpers: stacking true objects from simulated markets
 # -----------------------------------------------------------------------------
+
 
 def stack_true_xi(markets: List[dict]) -> np.ndarray:
     xs = []
@@ -160,7 +191,10 @@ def stack_is_signal(markets: List[dict]) -> np.ndarray:
 # Paper-aligned matrices (NO constant in X or Z)
 # -----------------------------------------------------------------------------
 
-def build_matrices_paper(markets: List[dict], iv_type: str) -> Tuple[np.ndarray, np.ndarray]:
+
+def build_matrices_paper(
+    markets: List[dict], iv_type: str
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Paper-aligned stacking.
 
@@ -198,12 +232,15 @@ def build_matrices_paper(markets: List[dict], iv_type: str) -> Tuple[np.ndarray,
 # Metrics (paper table columns)
 # -----------------------------------------------------------------------------
 
+
 def mean_abs_and_sd(err: np.ndarray) -> Tuple[float, float]:
     e = np.asarray(err, dtype=float).reshape(-1)
     return float(np.mean(np.abs(e))), float(np.std(e, ddof=1))
 
 
-def prob_signal_noise(gamma_prob: np.ndarray, is_signal: np.ndarray) -> Tuple[float, float]:
+def prob_signal_noise(
+    gamma_prob: np.ndarray, is_signal: np.ndarray
+) -> Tuple[float, float]:
     g = np.asarray(gamma_prob, dtype=float).reshape(-1)
     s = np.asarray(is_signal, dtype=int).reshape(-1)
     ps = float(np.mean(g[s == 1])) if np.any(s == 1) else float("nan")
@@ -214,6 +251,7 @@ def prob_signal_noise(gamma_prob: np.ndarray, is_signal: np.ndarray) -> Tuple[fl
 # -----------------------------------------------------------------------------
 # Paper-aligned BLP estimation (grid + refine), using X/Z above
 # -----------------------------------------------------------------------------
+
 
 def gmm_objective_for_sigma_paper(
     sigma: float, markets: List[dict], iv_type: str, R: int
@@ -238,13 +276,17 @@ def gmm_objective_for_sigma_paper(
     return obj, beta_hat, delta_vec, X, Z, xi_hat
 
 
-def estimate_blp_sigma_paper(markets: List[dict], iv_type: str, R: int) -> Tuple[float, np.ndarray, dict]:
+def estimate_blp_sigma_paper(
+    markets: List[dict], iv_type: str, R: int
+) -> Tuple[float, np.ndarray, dict]:
     grid = np.linspace(0.05, 4.0, 40)
     best_obj: Optional[float] = None
     best_pack = None
 
     for s in grid:
-        obj, beta, delta_vec, X, Z, xi_hat = gmm_objective_for_sigma_paper(s, markets, iv_type=iv_type, R=R)
+        obj, beta, delta_vec, X, Z, xi_hat = gmm_objective_for_sigma_paper(
+            s, markets, iv_type=iv_type, R=R
+        )
         if (best_obj is None) or (obj < best_obj):
             best_obj = obj
             best_pack = (float(s), beta, delta_vec, X, Z, xi_hat, float(obj))
@@ -254,7 +296,9 @@ def estimate_blp_sigma_paper(markets: List[dict], iv_type: str, R: int) -> Tuple
     refine = np.linspace(max(0.01, s0 - 0.25), s0 + 0.25, 30)
 
     for s in refine:
-        obj, beta, delta_vec, X, Z, xi_hat = gmm_objective_for_sigma_paper(s, markets, iv_type=iv_type, R=R)
+        obj, beta, delta_vec, X, Z, xi_hat = gmm_objective_for_sigma_paper(
+            s, markets, iv_type=iv_type, R=R
+        )
         if obj < float(best_obj):
             best_obj = float(obj)
             best_pack = (float(s), beta, delta_vec, X, Z, xi_hat, float(obj))
@@ -275,6 +319,7 @@ def estimate_blp_sigma_paper(markets: List[dict], iv_type: str, R: int) -> Tuple
 # Paper-aligned shrinkage sigma search (uses paper X, no constant)
 # -----------------------------------------------------------------------------
 
+
 def shrinkage_objective_for_sigma_paper(
     sigma: float, markets: List[dict], R: int, **kwargs
 ) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
@@ -285,7 +330,9 @@ def shrinkage_objective_for_sigma_paper(
     delta_vec = compute_delta_vec(markets, float(sigma), R=R)
     X, _ = build_matrices_paper(markets, iv_type="nocost")  # shrinkage uses X only
 
-    beta_hat, gamma_prob, score, acc_rate = shrinkage_fit_beta_given_sigma(delta_vec, X, **kwargs)
+    beta_hat, gamma_prob, score, acc_rate = shrinkage_fit_beta_given_sigma(
+        delta_vec, X, **kwargs
+    )
     xi_hat = delta_vec - X @ beta_hat  # full xi
 
     return (
@@ -313,8 +360,8 @@ def estimate_shrinkage_sigma_paper(
     best_acc: Optional[float] = None
 
     for s in sigma_grid:
-        score, beta_hat, gamma_prob, acc_rate, delta_vec, X, xi_hat = shrinkage_objective_for_sigma_paper(
-            s, markets, R=R, **kwargs
+        score, beta_hat, gamma_prob, acc_rate, delta_vec, X, xi_hat = (
+            shrinkage_objective_for_sigma_paper(s, markets, R=R, **kwargs)
         )
         if (best is None) or (score > best[0]):
             best = (score, float(s), beta_hat, gamma_prob, delta_vec, X, xi_hat)
@@ -325,8 +372,8 @@ def estimate_shrinkage_sigma_paper(
     refine = np.linspace(max(0.01, s0 - 0.25), s0 + 0.25, 25)
 
     for s in refine:
-        score, beta_hat, gamma_prob, acc_rate, delta_vec, X, xi_hat = shrinkage_objective_for_sigma_paper(
-            s, markets, R=R, **kwargs
+        score, beta_hat, gamma_prob, acc_rate, delta_vec, X, xi_hat = (
+            shrinkage_objective_for_sigma_paper(s, markets, R=R, **kwargs)
         )
         if score > best[0]:
             best = (score, float(s), beta_hat, gamma_prob, delta_vec, X, xi_hat)
@@ -335,7 +382,12 @@ def estimate_shrinkage_sigma_paper(
     score_hat, sigma_hat, beta_hat, gamma_prob, delta_hat, X, xi_hat = best
 
     if not return_extras:
-        return float(sigma_hat), np.asarray(beta_hat, dtype=float), float(score_hat), np.asarray(gamma_prob, dtype=float)
+        return (
+            float(sigma_hat),
+            np.asarray(beta_hat, dtype=float),
+            float(score_hat),
+            np.asarray(gamma_prob, dtype=float),
+        )
 
     extras = {
         "acc_rate": float(best_acc) if best_acc is not None else float("nan"),
@@ -356,6 +408,7 @@ def estimate_shrinkage_sigma_paper(
 # Logging / diagnostics helpers
 # -----------------------------------------------------------------------------
 
+
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
@@ -369,6 +422,7 @@ def _warn_exception(msg: str, e: Exception) -> None:
 # -----------------------------------------------------------------------------
 # One replication (one dataset) per grid cell
 # -----------------------------------------------------------------------------
+
 
 def run_one_rep(
     *,
@@ -413,7 +467,9 @@ def run_one_rep(
         fail=0,
     )
     try:
-        sigma_hat, beta_hat, extras = estimate_blp_sigma_paper(markets, iv_type="cost", R=R_mc)
+        sigma_hat, beta_hat, extras = estimate_blp_sigma_paper(
+            markets, iv_type="cost", R=R_mc
+        )
         xi_hat = np.asarray(extras["xi_hat"], dtype=float).reshape(-1)
 
         rec["sigma"] = float(sigma_hat)
@@ -444,7 +500,9 @@ def run_one_rep(
         fail=0,
     )
     try:
-        sigma_hat, beta_hat, extras = estimate_blp_sigma_paper(markets, iv_type="nocost", R=R_mc)
+        sigma_hat, beta_hat, extras = estimate_blp_sigma_paper(
+            markets, iv_type="nocost", R=R_mc
+        )
         xi_hat = np.asarray(extras["xi_hat"], dtype=float).reshape(-1)
 
         rec["sigma"] = float(sigma_hat)
@@ -475,8 +533,10 @@ def run_one_rep(
         fail=0,
     )
     try:
-        sigma_hat, beta_hat, score_hat, gamma_prob, extras = estimate_shrinkage_sigma_paper(
-            markets, R=R_mc, return_extras=True, **shrink_kwargs
+        sigma_hat, beta_hat, score_hat, gamma_prob, extras = (
+            estimate_shrinkage_sigma_paper(
+                markets, R=R_mc, return_extras=True, **shrink_kwargs
+            )
         )
         xi_hat = np.asarray(extras["xi_hat"], dtype=float).reshape(-1)
 
@@ -508,6 +568,7 @@ def run_one_rep(
 # -----------------------------------------------------------------------------
 # Aggregation + outputs
 # -----------------------------------------------------------------------------
+
 
 def summarize_methods(method_recs: List[dict], true_params: dict) -> Dict[str, dict]:
     """
@@ -545,7 +606,9 @@ def summarize_methods(method_recs: List[dict], true_params: dict) -> Dict[str, d
     return out
 
 
-def write_outputs(out_dir: Path, grid: GridPoint, summary: Dict[str, dict], true_params: dict) -> None:
+def write_outputs(
+    out_dir: Path, grid: GridPoint, summary: Dict[str, dict], true_params: dict
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # summary.csv (long format)
@@ -615,7 +678,9 @@ def write_outputs(out_dir: Path, grid: GridPoint, summary: Dict[str, dict], true
             )
         )
 
-    (out_dir / "paper_table_like.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    (out_dir / "paper_table_like.csv").write_text(
+        "\n".join(rows) + "\n", encoding="utf-8"
+    )
 
     cfg_dump = {
         "dgp": grid.dgp,
@@ -624,12 +689,15 @@ def write_outputs(out_dir: Path, grid: GridPoint, summary: Dict[str, dict], true
         "true_params": true_params,
         "timestamp": _now(),
     }
-    (out_dir / "config.json").write_text(json.dumps(cfg_dump, indent=2), encoding="utf-8")
+    (out_dir / "config.json").write_text(
+        json.dumps(cfg_dump, indent=2), encoding="utf-8"
+    )
 
 
 # -----------------------------------------------------------------------------
 # Multiprocessing helpers
 # -----------------------------------------------------------------------------
+
 
 def _set_thread_env(threads: int) -> None:
     t = str(max(1, int(threads)))
@@ -660,7 +728,9 @@ def _worker_run_one_rep(args_tuple):
 def _run_reps_parallel(tasks: List[tuple], n_jobs: int) -> List[Dict[str, dict]]:
     results: List[Dict[str, dict]] = [None] * len(tasks)  # type: ignore
     with ProcessPoolExecutor(max_workers=int(n_jobs)) as ex:
-        fut_to_idx = {ex.submit(_worker_run_one_rep, task): i for i, task in enumerate(tasks)}
+        fut_to_idx = {
+            ex.submit(_worker_run_one_rep, task): i for i, task in enumerate(tasks)
+        }
         for fut in as_completed(fut_to_idx):
             i = fut_to_idx[fut]
             results[i] = fut.result()
@@ -670,6 +740,7 @@ def _run_reps_parallel(tasks: List[tuple], n_jobs: int) -> List[Dict[str, dict]]
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
+
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
@@ -714,7 +785,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     }
 
     for gp in grid_points:
-        print(f"\n=== START {gp.dgp}  T={gp.T}  J={gp.J}  reps={n_reps}  R={R_mc}  jobs={args.n_jobs} ===")
+        print(
+            f"\n=== START {gp.dgp}  T={gp.T}  J={gp.J}  reps={n_reps}  R={R_mc}  jobs={args.n_jobs} ==="
+        )
 
         rep_seeds = [int(args.seed) + 10_000 * r + 123 for r in range(n_reps)]
 
