@@ -1,6 +1,7 @@
-"""zhang_sparse_choice_learn.py
-need to clean this up since its the old unrefactor code and its not matching the lu25 path
-Zhang-Sparse (Lu25-aligned) estimator implemented using DeepHalo (Zhang 2025)
+"""
+zhang_lu_sparse.py
+
+Zhang-Sparse (Lu25-aligned) estimator using DeepHalo (Zhang 2025)
 with a Lu(2025)-style sparse market×product shock layer.
 
 Key idea
@@ -9,69 +10,37 @@ DeepHalo provides context-dependent utilities u_halo(t,j).
 Lu(2025) suggests unobserved shocks decompose as xi_{t j} = mu_t + d_{t j} with d sparse.
 
 We implement:
-u_{t j} = u_halo(t,j) + 1{j!=0} * ( mu_t + d_{t j} )
+  u_{t j} = u_halo(t,j) + 1{j!=0} * ( mu_t + d_{t j} )
 
 and estimate by MAP:
-minimize mean-NLL
-  + lambda * mean(|d|)
-  + (1/(2*mu_sd^2)) * mean(mu^2)
+  minimize mean-NLL
+    + lambda * mean(|d|)
+    + (1/(2*mu_sd^2)) * mean(mu^2)
 
-This file is intentionally "repo-consistent":
-- It does NOT depend on choice-learn's internal BaseModel API.
-- It uses ChoiceDataset as a data container, then trains manually.
+Design / repo integration
+-------------------------
+- Uses ChoiceDataset as a data container (choice-learn).
+- Imports the packaged DeepHalo implementation from:
+    choice_learn_ext.models.deep_context
+- No sys.path hacks, no placeholder fallbacks.
 
 Run
 ---
-python choice_learn_extension/zhang_sparse_choice_learn.py
+python -m jpm_q3.hybrid.zhang_lu_sparse
 """
 
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
-
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
 from choice_learn.data import ChoiceDataset
 
-# -----------------------------------------------------------------------------
-# Import DeepHalo
-# -----------------------------------------------------------------------------
-
-HERE = Path(__file__).resolve()
-PROJECT_ROOT = HERE.parents[1]
-sys.path.insert(0, str(HERE.parent))
-
-try:
-    from config import DeepHaloConfig
-    from deep_halo_core import DeepHalo
-except ImportError:
-    print("Warning: DeepHalo not found, using placeholder.")
-
-    class DeepHaloConfig:
-        def __init__(self, **kwargs):
-            for k, v in kwargs.items():
-                setattr(self, k, v)
-
-    class DeepHalo(tf.keras.Model):
-        def __init__(self, config):
-            super().__init__()
-            self.embedding = tf.keras.layers.Embedding(
-                config.vocab_size, config.d_embed
-            )
-            self.dense = tf.keras.layers.Dense(1)
-
-        def call(self, inputs, training=False):
-            emb = self.embedding(inputs["item_ids"])
-            u = tf.squeeze(self.dense(emb), -1)
-            return {"utilities": u}
-
+# Import DeepHalo from your packaged choice-learn extension
+from choice_learn_ext.models.deep_context.config import DeepHaloConfig
+from choice_learn_ext.models.deep_context.deep_halo_core import DeepHalo
 
 # -----------------------------------------------------------------------------
 # Config
@@ -148,6 +117,7 @@ class ZhangSparseDeepHalo(tf.keras.Model):
         mu_t = tf.gather(self.mu, market_id)  # (B,)
         d_t = tf.gather(self.d, market_id)  # (B, J_inside)
 
+        # Identification constraint: within-market mean(d_t) = 0
         if self.cfg.center_d_within_market:
             d_t = d_t - tf.reduce_mean(d_t, axis=1, keepdims=True)
 
@@ -164,6 +134,7 @@ class ZhangSparseDeepHalo(tf.keras.Model):
 
         u_aug = u + inside_mask * mu_t[:, None] + d_pad
 
+        # availability mask
         avail = tf.cast(inputs["available"], tf.float32)
         u_masked = tf.where(avail > 0.5, u_aug, tf.cast(-1e9, u_aug.dtype))
         log_probs = tf.nn.log_softmax(u_masked, axis=1)
@@ -204,7 +175,10 @@ class AblationTrainer:
         with tf.GradientTape() as tape:
             loss = self.model.map_objective(batch, training=True)
         grads = tape.gradient(loss, self.train_vars)
-        self.opt.apply_gradients(zip(grads, self.train_vars, strict=True))
+
+        # Filter None grads (can happen if a var is disconnected in an ablation)
+        pairs = [(g, v) for g, v in zip(grads, self.train_vars) if g is not None]
+        self.opt.apply_gradients(pairs)
         return loss
 
     def fit(
@@ -365,14 +339,12 @@ def build_and_init_model(
     }
     _ = model.call(dummy, training=False)
 
-    # Optionally copy initialization weights for fair ablations
     if init_from_weights is not None:
         model.set_weights(init_from_weights)
 
     # Ensure mu and d start at zero for every ablation
     model.mu.assign(tf.zeros_like(model.mu))
     model.d.assign(tf.zeros_like(model.d))
-
     return model
 
 
@@ -380,14 +352,11 @@ def select_train_vars(
     model: ZhangSparseDeepHalo, learn_mu: bool, learn_d: bool
 ) -> list[tf.Variable]:
     vars_ = []
-    # Always train halo
     vars_.extend(model.halo.trainable_variables)
-
     if learn_mu:
         vars_.append(model.mu)
     if learn_d:
         vars_.append(model.d)
-
     return vars_
 
 
@@ -428,13 +397,11 @@ def run_one_ablation(
 ):
     print(f"\n=== Ablation: {name} ===")
 
-    # For ablations that freeze d/mu, it is cleaner to set corresponding penalties to 0
-    # to keep MAP objective aligned with what is being learned.
     cfg_local = ZhangSparseConfig(**vars(cfg))
     if not learn_d:
         cfg_local.l1_strength = 0.0
     if not learn_mu:
-        cfg_local.mu_sd = 1e9  # effectively no ridge (and mu won't be trained anyway)
+        cfg_local.mu_sd = 1e9
 
     model = build_and_init_model(
         cfg_local, n_items, T, J_inside, init_from_weights=init_weights
@@ -455,13 +422,7 @@ def run_one_ablation(
     print(f"{name} results:")
     print("  NLL:", nll)
     print("  breakdown:", bd)
-
     return model, bd
-
-
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
 
 
 def main():
@@ -490,11 +451,9 @@ def main():
     )
     data = choice_dataset_to_tensors(dataset, n_items=n_items)
 
-    # Build a base model once to get a common weight init for fair ablations
     base_model = build_and_init_model(cfg, n_items, T, J_inside, init_from_weights=None)
     init_weights = base_model.get_weights()
 
-    # Run the three ablations
     results = {}
 
     _, results["DeepHalo-only"] = run_one_ablation(
@@ -533,7 +492,6 @@ def main():
         init_weights=init_weights,
     )
 
-    # Summary table
     print("\n=== Summary (in-sample) ===")
     print(f"{'Model':<32} {'NLL':>10} {'mean|d|':>10} {'std(mu)':>10}")
     print("-" * 68)
@@ -543,7 +501,6 @@ def main():
             f"{k:<32} {r['nll']:>10.4f} {r['mean_abs_d']:>10.4f} {r['std_mu']:>10.4f}"
         )
 
-    # Optional: support recovery for Full only
     d_hat = full_model.d.numpy()
     gamma_hat = (np.abs(d_hat) > cfg.tau_detect).astype(np.int32)
     gamma_true = meta["gamma_true"]
