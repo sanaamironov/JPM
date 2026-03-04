@@ -10,22 +10,17 @@ from .model import DynamicContextSparseChoiceModel
 
 
 class DynamicTrainer:
+    """Simple MAP trainer for the bonus dynamic + sparse shocks prototype."""
+
     def __init__(self, model: DynamicContextSparseChoiceModel, cfg: DynamicModelConfig):
         self.model = model
         self.cfg = cfg
-        self.opt = self._make_optimizer(cfg.lr, cfg.use_legacy_adam)
-        if cfg.compile_train_step:
-            self._train_step_fn = tf.function(self._train_step_eager)
-        else:
-            self._train_step_fn = self._train_step_eager
-
-    @staticmethod
-    def _make_optimizer(lr: float, use_legacy_adam: bool):
-        if use_legacy_adam:
-            legacy = getattr(tf.keras.optimizers, "legacy", None)
-            if legacy is not None and hasattr(legacy, "Adam"):
-                return legacy.Adam(learning_rate=lr)
-        return tf.keras.optimizers.Adam(learning_rate=lr)
+        self.opt = tf.keras.optimizers.Adam(learning_rate=float(cfg.lr))
+        self._train_step_fn = (
+            tf.function(self._train_step_eager)
+            if cfg.compile_train_step
+            else self._train_step_eager
+        )
 
     def _train_step_eager(self, batch: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         cur = {
@@ -45,15 +40,20 @@ class DynamicTrainer:
         done = batch["done"]
 
         with tf.GradientTape() as tape:
-            parts = self.model.loss(
+            parts = self.model.compute_loss(
                 inputs=cur,
                 next_inputs=nxt,
                 reward=reward,
                 done=done,
                 training=True,
             )
+
         grads = tape.gradient(parts["total"], self.model.trainable_variables)
-        pairs = [(g, v) for g, v in zip(grads, self.model.trainable_variables) if g is not None]
+        pairs = [
+            (g, v)
+            for g, v in zip(grads, self.model.trainable_variables)
+            if g is not None
+        ]
         self.opt.apply_gradients(pairs)
         return parts
 
@@ -62,21 +62,25 @@ class DynamicTrainer:
 
     def fit(self, data: Dict[str, np.ndarray]) -> None:
         tensors = {k: tf.convert_to_tensor(v) for k, v in data.items()}
-        ds = tf.data.Dataset.from_tensor_slices(tensors).shuffle(4096, seed=self.cfg.seed).batch(
-            self.cfg.batch_size
+        ds = (
+            tf.data.Dataset.from_tensor_slices(tensors)
+            .shuffle(4096, seed=int(self.cfg.seed))
+            .batch(int(self.cfg.batch_size))
         )
 
-        for ep in range(1, self.cfg.epochs + 1):
+        for ep in range(1, int(self.cfg.epochs) + 1):
             m_total = tf.keras.metrics.Mean()
             m_nll = tf.keras.metrics.Mean()
             m_td = tf.keras.metrics.Mean()
             m_prior = tf.keras.metrics.Mean()
+
             for batch in ds:
                 parts = self.train_step(batch)
                 m_total.update_state(parts["total"])
                 m_nll.update_state(parts["nll"])
                 m_td.update_state(parts["td"])
                 m_prior.update_state(parts["prior"])
+
             print(
                 f"Epoch {ep:03d} | total={m_total.result():.4f} "
                 f"nll={m_nll.result():.4f} td={m_td.result():.4f} prior={m_prior.result():.4f}"
