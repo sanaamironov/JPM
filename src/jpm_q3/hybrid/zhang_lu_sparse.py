@@ -17,13 +17,6 @@ and estimate by MAP:
     + lambda * mean(|d|)
     + (1/(2*mu_sd^2)) * mean(mu^2)
 
-Design / repo integration
--------------------------
-- Uses ChoiceDataset as a data container (choice-learn).
-- Imports the packaged DeepHalo implementation from:
-    choice_learn_ext.models.deep_context
-- No sys.path hacks, no placeholder fallbacks.
-
 Run
 ---
 python -m jpm_q3.hybrid.zhang_lu_sparse
@@ -31,13 +24,30 @@ python -m jpm_q3.hybrid.zhang_lu_sparse
 
 from __future__ import annotations
 
+import csv
+import json
+import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
 from choice_learn.data import ChoiceDataset
+
+
+class _IgnoreChoiceLearnFeatureNameWarnings(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "Shared Features Names were not provided" in msg:
+            return False
+        if "Items Features Names were not provided" in msg:
+            return False
+        return True
+
+
+logging.getLogger().addFilter(_IgnoreChoiceLearnFeatureNameWarnings())
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
@@ -67,12 +77,12 @@ class ZhangSparseConfig:
     verbose: int = 1
 
     # MAP penalties (mean-scaled)
-    l1_strength: float = 0.1
+    l1_strength: float = 0.25
     mu_sd: float = 5.0
     center_d_within_market: bool = True
 
     # diagnostics/support detection
-    tau_detect: float = 0.25
+    tau_detect: float = 0.5
 
     seed: int = 123
 
@@ -162,7 +172,7 @@ class ZhangSparseDeepHalo(tf.keras.Model):
 
 
 # -----------------------------------------------------------------------------
-# Trainer (supports ablations by specifying which variables to train)
+# Trainer
 # -----------------------------------------------------------------------------
 
 
@@ -207,7 +217,7 @@ class AblationTrainer:
 
 
 # -----------------------------------------------------------------------------
-# Data conversion (robust to choice-learn versions)
+# Data conversion
 # -----------------------------------------------------------------------------
 
 
@@ -310,11 +320,20 @@ def simulate_context_plus_sparse(
 
     choices = np.array([rng.choice(n_items, p=P[i]) for i in range(N)], dtype=np.int32)
 
-    dataset = ChoiceDataset(
-        shared_features_by_choice=market_id.reshape(-1, 1),
-        items_features_by_choice=np.zeros((N, n_items, 1), dtype=np.float32),
-        choices=choices,
-    )
+    try:
+        dataset = ChoiceDataset(
+            shared_features_by_choice=market_id.reshape(-1, 1),
+            items_features_by_choice=np.zeros((N, n_items, 1), dtype=np.float32),
+            choices=choices,
+            shared_features_names=["market_id"],
+            items_features_names=["dummy_item_feature"],
+        )
+    except TypeError:
+        dataset = ChoiceDataset(
+            shared_features_by_choice=market_id.reshape(-1, 1),
+            items_features_by_choice=np.zeros((N, n_items, 1), dtype=np.float32),
+            choices=choices,
+        )
 
     meta = {"mu_true": mu_true, "d_true": d_true, "gamma_true": gamma_true}
     return dataset, meta
@@ -323,86 +342,10 @@ def simulate_context_plus_sparse(
 # -----------------------------------------------------------------------------
 # Ablation runner
 # -----------------------------------------------------------------------------
+
+
 def set_halo_trainable(model: ZhangSparseDeepHalo, trainable: bool) -> None:
-    """Freeze/unfreeze DeepHalo submodel."""
     model.halo.trainable = bool(trainable)
-
-    # Some Keras submodules don’t fully respect .trainable until variables are rebuilt,
-    # but in practice this works for most TF/Keras modules. We also rely on selecting
-    # train_vars explicitly (below), which is the real enforcement.
-    #
-    #
-    def run_two_stage_full(
-        cfg: ZhangSparseConfig,
-        data: Dict[str, np.ndarray],
-        n_items: int,
-        T: int,
-        J_inside: int,
-        init_weights: list[np.ndarray],
-        stage1_epochs: Optional[int] = None,
-        stage2_epochs: Optional[int] = None,
-    ):
-        """
-        Two-stage training:
-          Stage 1: train DeepHalo + mu (d frozen at 0, L1 disabled)
-          Stage 2: freeze DeepHalo, train mu + d with L1 (sparse layer does the work)
-
-        Returns:
-          full_model, breakdown_dict
-        """
-        print(
-            "\n=== Two-stage: Full (DeepHalo + mu) then (freeze halo, learn mu + sparse d) ==="
-        )
-
-        # --------
-        # Stage 1
-        # --------
-        cfg1 = ZhangSparseConfig(**vars(cfg))
-        cfg1.l1_strength = 0.0  # d frozen, so remove L1 from objective
-        if stage1_epochs is not None:
-            cfg1.epochs = int(stage1_epochs)
-
-        model = build_and_init_model(
-            cfg1, n_items, T, J_inside, init_from_weights=init_weights
-        )
-
-        # Train Halo + mu only (no d)
-        set_halo_trainable(model, True)
-        train_vars_1 = select_train_vars(model, learn_mu=True, learn_d=False)
-
-        trainer1 = AblationTrainer(model, lr=cfg1.lr, train_vars=train_vars_1)
-        trainer1.fit(
-            data, batch_size=cfg1.batch_size, epochs=cfg1.epochs, verbose=cfg1.verbose
-        )
-
-        # --------
-        # Stage 2
-        # --------
-        cfg2 = ZhangSparseConfig(**vars(cfg))
-        if stage2_epochs is not None:
-            cfg2.epochs = int(stage2_epochs)
-
-        # Freeze halo: sparse layer must explain residual structure
-        set_halo_trainable(model, False)
-
-        # Important: keep halo variables OUT of train_vars in stage 2.
-        # We train only mu and d.
-        train_vars_2: list[tf.Variable] = [model.mu, model.d]
-
-        trainer2 = AblationTrainer(model, lr=cfg2.lr, train_vars=train_vars_2)
-        trainer2.fit(
-            data, batch_size=cfg2.batch_size, epochs=cfg2.epochs, verbose=cfg2.verbose
-        )
-
-        # Evaluate
-        nll = evaluate_nll(model, data)
-        bd = objective_breakdown(model, cfg2, data)
-
-        print("Two-stage Full results:")
-        print("  NLL:", nll)
-        print("  breakdown:", bd)
-
-        return model, bd
 
 
 def build_and_init_model(
@@ -426,7 +369,6 @@ def build_and_init_model(
     if init_from_weights is not None:
         model.set_weights(init_from_weights)
 
-    # Ensure mu and d start at zero for every ablation
     model.mu.assign(tf.zeros_like(model.mu))
     model.d.assign(tf.zeros_like(model.d))
     return model
@@ -509,18 +451,146 @@ def run_one_ablation(
     return model, bd
 
 
-def main():
-    cfg = ZhangSparseConfig()
+def run_two_stage_full(
+    cfg: ZhangSparseConfig,
+    data: Dict[str, np.ndarray],
+    n_items: int,
+    T: int,
+    J_inside: int,
+    init_weights: list[np.ndarray],
+    stage1_epochs: Optional[int] = None,
+    stage2_epochs: Optional[int] = None,
+):
+    print(
+        "\n=== Two-stage: Full (DeepHalo + mu) then (freeze halo, learn mu + sparse d) ==="
+    )
+
+    # Stage 1: Halo + mu (L1 off; d not trained)
+    cfg1 = ZhangSparseConfig(**vars(cfg))
+    cfg1.l1_strength = 0.0
+    if stage1_epochs is not None:
+        cfg1.epochs = int(stage1_epochs)
+
+    model = build_and_init_model(
+        cfg1, n_items, T, J_inside, init_from_weights=init_weights
+    )
+
+    set_halo_trainable(model, True)
+    model.cfg = cfg1
+    train_vars_1 = select_train_vars(model, learn_mu=True, learn_d=False)
+
+    trainer1 = AblationTrainer(model, lr=cfg1.lr, train_vars=train_vars_1)
+    trainer1.fit(
+        data, batch_size=cfg1.batch_size, epochs=cfg1.epochs, verbose=cfg1.verbose
+    )
+
+    # Stage 2: freeze halo, train mu + d (L1 on)
+    cfg2 = ZhangSparseConfig(**vars(cfg))
+    if stage2_epochs is not None:
+        cfg2.epochs = int(stage2_epochs)
+
+    set_halo_trainable(model, False)
+    model.cfg = cfg2
+    train_vars_2: list[tf.Variable] = [model.mu, model.d]
+
+    trainer2 = AblationTrainer(model, lr=cfg2.lr, train_vars=train_vars_2)
+    trainer2.fit(
+        data, batch_size=cfg2.batch_size, epochs=cfg2.epochs, verbose=cfg2.verbose
+    )
+
+    nll = evaluate_nll(model, data)
+    bd = objective_breakdown(model, cfg2, data)
+
+    print("Two-stage Full results:")
+    print("  NLL:", nll)
+    print("  breakdown:", bd)
+
+    return model, bd
+
+
+def compute_support_metrics(
+    d_hat: np.ndarray, gamma_true: np.ndarray, taus: list[float]
+) -> list[dict]:
+    true_nz = gamma_true == 1
+    true_z = gamma_true == 0
+    true_nz_rate = float(gamma_true.mean())
+
+    out = []
+    for tau in taus:
+        gamma_hat = (np.abs(d_hat) > tau).astype(np.int32)
+        sens = (
+            float((gamma_hat[true_nz] == 1).mean())
+            if true_nz.sum() > 0
+            else float("nan")
+        )
+        spec = (
+            float((gamma_hat[true_z] == 0).mean()) if true_z.sum() > 0 else float("nan")
+        )
+        pred_nz = float(gamma_hat.mean())
+        out.append(
+            {
+                "tau": float(tau),
+                "sensitivity": sens,
+                "specificity": spec,
+                "pred_nz": pred_nz,
+                "true_nz_rate": true_nz_rate,
+            }
+        )
+    return out
+
+
+def save_results(out_dir: str | Path, payload: dict) -> None:
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    # 1) JSON (full payload)
+    (out_path / "results.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+
+    # 2) summary.csv
+    summary_rows = payload["summary_rows"]
+    with (out_path / "summary.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
+        w.writeheader()
+        w.writerows(summary_rows)
+
+    # 3) support.csv
+    support_rows = payload["support_rows"]
+    with (out_path / "support.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(support_rows[0].keys()))
+        w.writeheader()
+        w.writerows(support_rows)
+
+
+def run_experiment(
+    *,
+    cfg: ZhangSparseConfig,
+    T: int = 25,
+    J_inside: int = 15,
+    N_t: int = 1000,
+    sparse_frac_nonzero: float = 0.4,
+    mu_sd_sim: float = 2.0,
+    d_sd_sim: float = 1.0,
+    taus: Optional[list[float]] = None,
+) -> dict:
+    """
+    Runs the three-model ablation and returns a structured payload suitable for saving.
+
+    Returns a dict with:
+      - config_used
+      - metrics: per-model breakdowns
+      - support_rows: list of tau metrics for the Full model
+      - summary_rows: compact per-model table
+    """
+    if taus is None:
+        taus = [0.25, float(cfg.tau_detect)]
+
     np.random.seed(cfg.seed)
     tf.random.set_seed(cfg.seed)
 
-    # data
-    T = 25
-    J_inside = 15
-    N_t = 1000
     n_items = J_inside + 1
 
-    print("Simulating data...")
     dataset, meta = simulate_context_plus_sparse(
         T=T,
         J_inside=J_inside,
@@ -529,9 +599,9 @@ def main():
         d_embed=cfg.d_embed,
         n_blocks=cfg.n_blocks,
         n_heads=cfg.n_heads,
-        sparse_frac_nonzero=0.4,
-        mu_sd=2.0,
-        d_sd=1.0,
+        sparse_frac_nonzero=float(sparse_frac_nonzero),
+        mu_sd=float(mu_sd_sim),
+        d_sd=float(d_sd_sim),
     )
     data = choice_dataset_to_tensors(dataset, n_items=n_items)
 
@@ -571,32 +641,98 @@ def main():
         T=T,
         J_inside=J_inside,
         init_weights=init_weights,
-        stage1_epochs=cfg.epochs,  # keep same or lower if you want faster
-        stage2_epochs=cfg.epochs,  # keep same or lower if you want faster
+        stage1_epochs=cfg.epochs,
+        stage2_epochs=cfg.epochs,
     )
 
-    print("\n=== Summary (in-sample) ===")
-    print(f"{'Model':<32} {'NLL':>10} {'mean|d|':>10} {'std(mu)':>10}")
-    print("-" * 68)
+    d_hat = full_model.d.numpy()
+    gamma_true = meta["gamma_true"]
+    support_rows = compute_support_metrics(d_hat, gamma_true, taus)
+
+    summary_rows = []
     for k in ["DeepHalo-only", "Halo+mu", "Full"]:
         r = results[k]
-        print(
-            f"{k:<32} {r['nll']:>10.4f} {r['mean_abs_d']:>10.4f} {r['std_mu']:>10.4f}"
+        summary_rows.append(
+            {
+                "model": k,
+                "nll": float(r["nll"]),
+                "mean_abs_d": float(r["mean_abs_d"]),
+                "std_mu": float(r["std_mu"]),
+            }
         )
 
-    d_hat = full_model.d.numpy()
-    gamma_hat = (np.abs(d_hat) > cfg.tau_detect).astype(np.int32)
-    gamma_true = meta["gamma_true"]
+    payload = {
+        "config_used": {
+            **vars(cfg),
+            "T": int(T),
+            "J_inside": int(J_inside),
+            "N_t": int(N_t),
+            "sparse_frac_nonzero": float(sparse_frac_nonzero),
+            "mu_sd_sim": float(mu_sd_sim),
+            "d_sd_sim": float(d_sd_sim),
+            "taus": [float(x) for x in taus],
+        },
+        "metrics": results,
+        "summary_rows": summary_rows,
+        "support_rows": support_rows,
+    }
+    return payload
 
-    true_nz = gamma_true == 1
-    true_z = gamma_true == 0
-    sens = (gamma_hat[true_nz] == 1).mean() if true_nz.sum() > 0 else np.nan
-    spec = (gamma_hat[true_z] == 0).mean() if true_z.sum() > 0 else np.nan
 
+def main():
+    cfg = ZhangSparseConfig()
+    np.random.seed(cfg.seed)
+    tf.random.set_seed(cfg.seed)
+
+    # Run 1: moderately sparse (paper/demo default)
+    payload_40 = run_experiment(
+        cfg=cfg,
+        T=25,
+        J_inside=15,
+        N_t=1000,
+        sparse_frac_nonzero=0.4,
+        taus=[0.25, 0.35, cfg.tau_detect],
+    )
+    save_results("results/hybrid/zhang_lu_sparse/latest_sparse40", payload_40)
+
+    print("\n=== Summary (in-sample) [sparse_frac_nonzero=0.4] ===")
+    print(f"{'Model':<32} {'NLL':>10} {'mean|d|':>10} {'std(mu)':>10}")
+    print("-" * 68)
+    for row in payload_40["summary_rows"]:
+        print(
+            f"{row['model']:<32} {row['nll']:>10.4f} {row['mean_abs_d']:>10.4f} {row['std_mu']:>10.4f}"
+        )
     print("\nFull model support recovery (|d| > tau)")
-    print("  tau:", cfg.tau_detect)
-    print("  sensitivity:", float(sens))
-    print("  specificity:", float(spec))
+    for r in payload_40["support_rows"]:
+        print(
+            f"  tau={r['tau']:.2f}  sensitivity={r['sensitivity']:.3f}  specificity={r['specificity']:.3f}  "
+            f"pred_nz={r['pred_nz']:.3f}  true_nz={r['true_nz_rate']:.3f}"
+        )
+
+    # Run 2: more sparse (optional, nice to show)
+    payload_20 = run_experiment(
+        cfg=cfg,
+        T=25,
+        J_inside=15,
+        N_t=1000,
+        sparse_frac_nonzero=0.2,
+        taus=[0.25, 0.35, cfg.tau_detect],
+    )
+    save_results("results/hybrid/zhang_lu_sparse/latest_sparse20", payload_20)
+
+    print("\n=== Summary (in-sample) [sparse_frac_nonzero=0.2] ===")
+    print(f"{'Model':<32} {'NLL':>10} {'mean|d|':>10} {'std(mu)':>10}")
+    print("-" * 68)
+    for row in payload_20["summary_rows"]:
+        print(
+            f"{row['model']:<32} {row['nll']:>10.4f} {row['mean_abs_d']:>10.4f} {row['std_mu']:>10.4f}"
+        )
+    print("\nFull model support recovery (|d| > tau)")
+    for r in payload_20["support_rows"]:
+        print(
+            f"  tau={r['tau']:.2f}  sensitivity={r['sensitivity']:.3f}  specificity={r['specificity']:.3f}  "
+            f"pred_nz={r['pred_nz']:.3f}  true_nz={r['true_nz_rate']:.3f}"
+        )
 
     print("\nDone.")
 

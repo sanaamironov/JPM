@@ -1,17 +1,29 @@
 import unittest
+import warnings
+
+# just want a cleaner test log
+warnings.filterwarnings(
+    "ignore", message=".*does not have a `build\\(\\)` method implemented.*"
+)
+warnings.filterwarnings("ignore", message=".*looks like it has unbuilt state.*")
+warnings.filterwarnings(
+    "ignore", message=".*not a valid root scope name.*"
+)  # catches the __zero_halo one too
+
 import numpy as np
 import tensorflow as tf
 
 from jpm_q3.hybrid.zhang_lu_sparse import (
     ZhangSparseConfig,
     ZhangSparseDeepHalo,
-    simulate_context_plus_sparse,
     choice_dataset_to_tensors,
+    simulate_context_plus_sparse,
 )
 
 
-class _ZeroHalo(tf.keras.Model):
+class ZeroHalo(tf.keras.Model):
     """Deterministic halo used for unit tests: utilities are identically 0."""
+
     def __init__(self, n_items: int):
         super().__init__()
         self._n_items = int(n_items)
@@ -43,7 +55,9 @@ class TestZhangLuSparse(unittest.TestCase):
         model = ZhangSparseDeepHalo(num_items=n_items, T=T, J_inside=J_inside, cfg=cfg)
 
         batch = {
-            "item_ids": tf.constant(np.tile(np.arange(n_items)[None, :], (B, 1)), dtype=tf.int32),
+            "item_ids": tf.constant(
+                np.tile(np.arange(n_items)[None, :], (B, 1)), dtype=tf.int32
+            ),
             "available": tf.constant(np.ones((B, n_items), dtype=np.float32)),
             "choice": tf.constant(np.zeros((B,), dtype=np.int32)),
             "market_id": tf.constant(np.arange(B) % T, dtype=tf.int32),
@@ -81,20 +95,21 @@ class TestZhangLuSparse(unittest.TestCase):
 
         model = ZhangSparseDeepHalo(num_items=n_items, T=T, J_inside=J_inside, cfg=cfg)
         # Replace halo with deterministic zero-utilities model
-        model.halo = _ZeroHalo(n_items)
+        model.halo = ZeroHalo(n_items)
 
         # Set mu = 0 so only d matters
         model.mu.assign(tf.zeros_like(model.mu))
 
         # Make d nonzero and asymmetric to ensure centering is actually doing work
-        d_init = np.array([[1.0, -2.0, 3.0],
-                           [-4.0, 0.5, 1.5]], dtype=np.float32)
+        d_init = np.array([[1.0, -2.0, 3.0], [-4.0, 0.5, 1.5]], dtype=np.float32)
         model.d.assign(d_init)
 
         # Batch: alternating markets 0,1,0,1
         market_id = np.array([0, 1, 0, 1], dtype=np.int32)
         batch = {
-            "item_ids": tf.constant(np.tile(np.arange(n_items)[None, :], (B, 1)), dtype=tf.int32),
+            "item_ids": tf.constant(
+                np.tile(np.arange(n_items)[None, :], (B, 1)), dtype=tf.int32
+            ),
             "available": tf.constant(np.ones((B, n_items), dtype=np.float32)),
             "choice": tf.constant(np.zeros((B,), dtype=np.int32)),
             "market_id": tf.constant(market_id, dtype=tf.int32),

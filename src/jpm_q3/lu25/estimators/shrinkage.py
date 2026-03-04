@@ -120,7 +120,8 @@ def _sample_beta_pi_chain(
 
         # beta prior: N(0, beta_var I)
         beta_lp = tf.reduce_sum(
-            -0.5 * (tf.square(beta) / beta_var_tf + tf.math.log(beta_var_tf) + log2pi_tf)
+            -0.5
+            * (tf.square(beta) / beta_var_tf + tf.math.log(beta_var_tf) + log2pi_tf)
         )
 
         # pi prior: Beta(a_pi, b_pi) on pi, with logistic transform jacobian
@@ -159,8 +160,8 @@ def shrinkage_fit_beta_given_sigma(
     n_iter: int = 800,
     burn: int = 400,
     thin: int = 1,
-    v0: float = 0.05,   # spike variance
-    v1: float = 1.0,    # slab variance
+    v0: float = 0.05,  # spike variance
+    v1: float = 1.0,  # slab variance
     a_pi: float = 1.0,
     b_pi: float = 9.0,  # prior mean pi ~ 0.1 (sparse)
     beta_var: float = 1e6,
@@ -194,7 +195,9 @@ def shrinkage_fit_beta_given_sigma(
     if X.ndim != 2:
         raise ValueError("X must be a 2D array [N,k].")
     if X.shape[0] != delta_vec.shape[0]:
-        raise ValueError(f"X and delta_vec must have same N. Got {X.shape[0]} vs {delta_vec.shape[0]}.")
+        raise ValueError(
+            f"X and delta_vec must have same N. Got {X.shape[0]} vs {delta_vec.shape[0]}."
+        )
 
     n_iter = int(n_iter)
     burn = int(burn)
@@ -227,27 +230,30 @@ def shrinkage_fit_beta_given_sigma(
     beta_rw_scale_tf = tf.constant(float(beta_rw_scale), dtype=tf.float64)
     pi_rw_scale_tf = tf.constant(float(pi_rw_scale), dtype=tf.float64)
 
-    beta_draws_tf, logit_pi_draws_tf, logpost_draws_tf, acc_rate_tf = _sample_beta_pi_chain(
-        X_tf=X_tf,
-        y_tf=y_tf,
-        beta_init_tf=tf.convert_to_tensor(beta_init, dtype=tf.float64),
-        logit_pi_init_tf=tf.convert_to_tensor(logit_pi_init, dtype=tf.float64),
-        v0_tf=v0_tf,
-        v1_tf=v1_tf,
-        beta_var_tf=beta_var_tf,
-        a_pi_tf=a_pi_tf,
-        b_pi_tf=b_pi_tf,
-        beta_rw_scale_tf=beta_rw_scale_tf,
-        pi_rw_scale_tf=pi_rw_scale_tf,
-        num_results=tf.convert_to_tensor(num_results, dtype=tf.int32),
-        num_burnin=tf.convert_to_tensor(num_burnin, dtype=tf.int32),
-        seed=tf.convert_to_tensor(int(seed), dtype=tf.int32),
+    beta_draws_tf, logit_pi_draws_tf, logpost_draws_tf, acc_rate_tf = (
+        _sample_beta_pi_chain(
+            X_tf=X_tf,
+            y_tf=y_tf,
+            beta_init_tf=tf.convert_to_tensor(beta_init, dtype=tf.float64),
+            logit_pi_init_tf=tf.convert_to_tensor(logit_pi_init, dtype=tf.float64),
+            v0_tf=v0_tf,
+            v1_tf=v1_tf,
+            beta_var_tf=beta_var_tf,
+            a_pi_tf=a_pi_tf,
+            b_pi_tf=b_pi_tf,
+            beta_rw_scale_tf=beta_rw_scale_tf,
+            pi_rw_scale_tf=pi_rw_scale_tf,
+            num_results=tf.convert_to_tensor(num_results, dtype=tf.int32),
+            num_burnin=tf.convert_to_tensor(num_burnin, dtype=tf.int32),
+            seed=tf.constant([int(seed), int(seed) ^ 0x9E3779B9], dtype=tf.int32),
+            # seed=tf.convert_to_tensor(int(seed), dtype=tf.int32),
+        )
     )
 
     # Convert to numpy
-    beta_samples = beta_draws_tf.numpy()               # [S,k], S=num_results
+    beta_samples = beta_draws_tf.numpy()  # [S,k], S=num_results
     pi_samples = tf.math.sigmoid(logit_pi_draws_tf).numpy()  # [S]
-    logpost = logpost_draws_tf.numpy()                # [S]
+    logpost = logpost_draws_tf.numpy()  # [S]
     acc_rate = float(acc_rate_tf.numpy())
 
     # Apply thinning consistently to posterior summaries.
