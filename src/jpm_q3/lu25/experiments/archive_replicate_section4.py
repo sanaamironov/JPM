@@ -9,26 +9,21 @@ The CLI wrapper `jpmq3-replicate-lu25` calls `main()` here.
 Paper-alignment choices (important)
 -----------------------------------
 1) Regressors X exclude the constant:
-      X = [p, w_c]
-   where w_c = w - mean(w_t) (within-market centered).
-   This matches the paper's presentation and avoids mixing constant offsets into instruments.
+      X = [p, w]
+   This makes the residual equal to the paper's full shock:
+      xi_{jt} = bar_xi + eta_{jt}.
 
 2) Instruments Z also exclude the constant:
-   - cost IV:   Z = [w_c, w_c^2, u, u^2]
-   - no-cost IV Z = [w_c, w_c^2, w_c^3, w_c^4]
+   - cost IV:   Z = [w, w^2, u, u^2]
+   - no-cost IV Z = [w, w^2, w^3, w^4]
    With bar_xi != 0, including a constant in Z would violate E[Z * xi] = 0.
 
 3) "Int" in the paper is bar_xi. We estimate it as:
       Int_hat = mean(xi_hat) across all (j,t).
 
-4) Important: centering correction for xi.
-   If X uses w_c = w - wbar_t, then residuals computed as:
-      xi_raw = delta - [p, w_c] beta
-   differ from the paper's xi by a shift of beta_w * wbar_t.
-   We therefore define:
-      xi_hat = xi_raw - beta_w_hat * wbar_vec
-   where wbar_vec stacks market means aligned with each observation.
-   This correction is applied consistently for BOTH BLP and shrinkage.
+4) "xi" column metrics are computed from xi_hat vs xi_true:
+      mean_abs_error = mean(|xi_hat - xi_true|)
+      sd_error       = sd(xi_hat - xi_true)
 
 Outputs (per grid cell)
 -----------------------
@@ -69,9 +64,34 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-# --- Project imports ---
+# BLP primitives
 from ..estimators.blp import compute_delta_vec, iv_2sls_beta  # type: ignore
 from ..estimators.shrinkage import shrinkage_fit_beta_given_sigma
+
+# Shrinkage primitives (TFP MCMC)
+# if args.shrink_mcmc_backend == "rwm":
+#    from jpm_q3.lu25.estimators.shrinkage import (
+#        shrinkage_fit_beta_given_sigma as shrink_fit,
+#    )
+# else:
+#   from jpm_q3.lu25.estimators.shrinkage_hmc import (
+#       shrinkage_fit_beta_given_sigma as shrink_fit,
+#   )
+# beta_mean, gamma_prob, score, acc_rate = shrink_fit(
+#    delta_vec,
+#    X,
+#    n_iter=args.shrink_n_iter,
+#    burn=args.shrink_burn,
+#    thin=args.shrink_thin,
+# v0=args.shrink_v0,
+#    v1=args.shrink_v1,
+#    a_pi=args.shrink_a_pi,
+#    b_pi=args.shrink_b_pi,
+#    beta_var=args.shrink_beta_var,
+#    seed=seed_for_this_rep,  # whatever you do now
+# plus HMC params only if backend==hmc (or accept **kwargs safely)
+# )
+# --- Project imports ---
 from ..simulation.config import SimConfig
 from ..simulation.simulate import simulate_dataset
 
@@ -126,6 +146,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "--smoke", action="store_true", help="Small/fast run (overrides some settings)"
     )
+
     p.add_argument(
         "--grid",
         type=str,
@@ -147,7 +168,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Threads used inside each worker process",
     )
 
-    # shrinkage knobs (keep minimal but controllable)
+    # shrinkage knobs
     p.add_argument(
         "--shrink-n-iter", type=int, default=800, help="Shrinkage MCMC total iters"
     )
@@ -160,46 +181,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=1,
         help="Shrinkage thinning (keep every k-th draw)",
     )
-
-    p.add_argument(
-        "--shrink-v0", type=float, default=0.05, help="Shrinkage spike variance v0"
-    )
-    p.add_argument(
-        "--shrink-v1", type=float, default=1.0, help="Shrinkage slab variance v1"
-    )
-    p.add_argument(
-        "--shrink-a-pi", type=float, default=1.0, help="Shrinkage Beta prior a_pi"
-    )
-    p.add_argument(
-        "--shrink-b-pi", type=float, default=9.0, help="Shrinkage Beta prior b_pi"
-    )
-    p.add_argument(
-        "--shrink-beta-var",
-        type=float,
-        default=1e6,
-        help="Shrinkage beta prior variance",
-    )
-    p.add_argument(
-        "--shrink-beta-rw-scale",
-        type=float,
-        default=0.05,
-        help="RWM proposal scale for beta",
-    )
-    p.add_argument(
-        "--shrink-pi-rw-scale",
-        type=float,
-        default=0.20,
-        help="RWM proposal scale for logit(pi)",
-    )
-
     return p.parse_args(argv)
 
 
 # -----------------------------------------------------------------------------
 # Helpers: stacking true objects from simulated markets
 # -----------------------------------------------------------------------------
-
-
 def stack_true_xi(markets: List[dict]) -> np.ndarray:
     xs = []
     for m in markets:
@@ -221,8 +208,6 @@ def stack_is_signal(markets: List[dict]) -> np.ndarray:
 # -----------------------------------------------------------------------------
 # Paper-aligned matrices (NO constant in X or Z)
 # -----------------------------------------------------------------------------
-
-
 def build_matrices_paper(
     markets: List[dict], iv_type: str
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -239,7 +224,7 @@ def build_matrices_paper(
 
     Additionally returns wbar_vec (stacked market means), length N,
     used to undo the centering shift when reporting xi and Int:
-      xi_hat = (delta - X beta) - beta_w_hat * wbar_vec
+      xi_corr = xi_raw - beta_w_hat * wbar_vec
     """
     Xs: List[np.ndarray] = []
     Zs: List[np.ndarray] = []
@@ -296,10 +281,12 @@ def prob_signal_noise(
 
 def gmm_objective_for_sigma_paper(
     sigma: float, markets: List[dict], iv_type: str, R: int
-) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[
+    float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+]:
     """
     Returns:
-      obj, beta_hat, delta_vec, X, Z, xi_hat   (xi_hat is *center-corrected* for paper alignment)
+      obj, beta_hat, delta_vec, X, Z, xi_raw, xi_corr
     """
     delta_vec = compute_delta_vec(markets, float(sigma), R=R)
     X, Z, wbar_vec = build_matrices_paper(markets, iv_type=iv_type)
@@ -307,16 +294,16 @@ def gmm_objective_for_sigma_paper(
     beta_hat = iv_2sls_beta(delta_vec, X, Z).numpy()  # (2,)
     xi_raw = delta_vec - X @ beta_hat
 
-    # Undo centering shift: xi_hat corresponds to paper's xi = bar_xi + eta
+    # Undo the centering-induced shift so xi corresponds to the paper's xi = bar_xi + eta
     beta_w_hat = float(beta_hat[1])
-    xi_hat = xi_raw - beta_w_hat * wbar_vec
+    xi_corr = xi_raw - beta_w_hat * wbar_vec
 
-    N = xi_hat.shape[0]
-    g = (Z.T @ xi_hat) / N
+    N = xi_corr.shape[0]
+    g = (Z.T @ xi_corr) / N
     W = np.linalg.inv((Z.T @ Z) / N)
     obj = float(g.T @ W @ g)
 
-    return obj, beta_hat, delta_vec, X, Z, xi_hat
+    return obj, beta_hat, delta_vec, X, Z, xi_raw, xi_corr
 
 
 def estimate_blp_sigma_paper(
@@ -369,20 +356,14 @@ def shrinkage_objective_for_sigma_paper(
     """
     Returns:
       score, beta_hat, gamma_prob, acc_rate, delta_vec, X, xi_hat
-    where xi_hat is center-corrected for paper alignment.
     """
     delta_vec = compute_delta_vec(markets, float(sigma), R=R)
-
-    # For shrinkage we only need X and wbar_vec (Z ignored).
-    X, _, wbar_vec = build_matrices_paper(markets, iv_type="nocost")
+    X, _ = build_matrices_paper(markets, iv_type="nocost")  # shrinkage uses X only
 
     beta_hat, gamma_prob, score, acc_rate = shrinkage_fit_beta_given_sigma(
         delta_vec, X, **kwargs
     )
-
-    xi_raw = delta_vec - X @ beta_hat
-    beta_w_hat = float(beta_hat[1])
-    xi_hat = xi_raw - beta_w_hat * wbar_vec
+    xi_hat = delta_vec - X @ beta_hat  # full xi
 
     return (
         float(score),
@@ -391,7 +372,7 @@ def shrinkage_objective_for_sigma_paper(
         float(acc_rate),
         delta_vec,
         X,
-        np.asarray(xi_hat, dtype=float),
+        xi_hat,
     )
 
 
@@ -582,15 +563,52 @@ def run_one_rep(
         fail=0,
     )
     try:
-        # IMPORTANT: unique MCMC seed per replication
-        local_shrink_kwargs = dict(shrink_kwargs)
-        local_shrink_kwargs["seed"] = int(rep_seed)
-
-        sigma_hat, beta_hat, score_hat, gamma_prob, extras = (
-            estimate_shrinkage_sigma_paper(
-                markets, R=R_mc, return_extras=True, **local_shrink_kwargs
-            )
+        # 3) Shrinkage
+        method = "Shrinkage"
+        rec = dict(
+            int=float("nan"),
+            beta_p=float("nan"),
+            beta_w=float("nan"),
+            sigma=float("nan"),
+            xi_bias_abs=float("nan"),
+            xi_sd=float("nan"),
+            prob_signal=float("nan"),
+            prob_noise=float("nan"),
+            fail=0,
         )
+        try:
+            # IMPORTANT: ensure each replication gets a unique MCMC seed
+            local_shrink_kwargs = dict(shrink_kwargs)
+            local_shrink_kwargs["seed"] = int(rep_seed)
+
+            sigma_hat, beta_hat, score_hat, gamma_prob, extras = (
+                estimate_shrinkage_sigma_paper(
+                    markets, R=R_mc, return_extras=True, **local_shrink_kwargs
+                )
+            )
+            xi_hat = np.asarray(extras["xi_hat"], dtype=float).reshape(-1)
+
+            rec["sigma"] = float(sigma_hat)
+            rec["beta_p"] = float(beta_hat[0])
+            rec["beta_w"] = float(beta_hat[1])
+            rec["int"] = float(np.mean(xi_hat))
+
+            if xi_true is not None:
+                mae, sd = mean_abs_and_sd(xi_hat - xi_true)
+                rec["xi_bias_abs"] = mae
+                rec["xi_sd"] = sd
+
+            if is_signal is not None and gamma_prob is not None:
+                ps, pn = prob_signal_noise(gamma_prob, is_signal)
+                rec["prob_signal"] = ps
+                rec["prob_noise"] = pn
+
+            _ = score_hat
+        except Exception as e:
+            rec["fail"] = 1
+            _warn_exception(f"{method} failed (rep={rep_seed})", e)
+        out[method] = rec
+
         xi_hat = np.asarray(extras["xi_hat"], dtype=float).reshape(-1)
 
         rec["sigma"] = float(sigma_hat)
@@ -608,7 +626,8 @@ def run_one_rep(
             rec["prob_signal"] = ps
             rec["prob_noise"] = pn
 
-        _ = score_hat  # not used in paper tables
+        # score_hat is not reported in paper tables, but can be useful to debug
+        _ = score_hat
     except Exception as e:
         rec["fail"] = 1
         _warn_exception(f"{method} failed (rep={rep_seed})", e)
@@ -802,16 +821,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.smoke:
         n_reps = 5
         R_mc = 50
-        # Keep shrinkage chain short in smoke mode, but not degenerate
-        shrink_n_iter = min(int(args.shrink_n_iter), 400)
-        shrink_burn = min(int(args.shrink_burn), 200)
-        shrink_thin = int(args.shrink_thin)
     else:
         n_reps = int(args.n_reps)
         R_mc = int(args.R_mc)
-        shrink_n_iter = int(args.shrink_n_iter)
-        shrink_burn = int(args.shrink_burn)
-        shrink_thin = int(args.shrink_thin)
 
     # macOS safety: use spawn (avoids fork issues with TF/BLAS)
     try:
@@ -830,16 +842,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         ]
 
     shrink_kwargs = dict(
-        n_iter=shrink_n_iter,
-        burn=shrink_burn,
-        thin=shrink_thin,
-        v0=float(args.shrink_v0),
-        v1=float(args.shrink_v1),
-        a_pi=float(args.shrink_a_pi),
-        b_pi=float(args.shrink_b_pi),
-        beta_var=float(args.shrink_beta_var),
-        beta_rw_scale=float(args.shrink_beta_rw_scale),
-        pi_rw_scale=float(args.shrink_pi_rw_scale),
+        n_iter=int(args.shrink_n_iter),
+        burn=int(args.shrink_burn),
+        thin=int(args.shrink_thin),
     )
 
     cfg = SimConfig()
@@ -855,7 +860,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"\n=== START {gp.dgp}  T={gp.T}  J={gp.J}  reps={n_reps}  R={R_mc}  jobs={args.n_jobs} ==="
         )
 
-        # Unique dataset seed per replication
         rep_seeds = [int(args.seed) + 10_000 * r + 123 for r in range(n_reps)]
 
         if int(args.n_jobs) <= 1:
