@@ -1,0 +1,77 @@
+{
+  "timestamp": "2026-03-04T18:07:19",
+  "config": {
+    "num_items": 8,
+    "num_markets": 12,
+    "d_embed": 16,
+    "n_blocks": 2,
+    "n_heads": 2,
+    "residual_variant": "fixed_base",
+    "dropout": 0.0,
+    "discount": 0.95,
+    "inventory_scale": 10.0,
+    "td_weight": 0.2,
+    "purchase_qty": 1.0,
+    "mean_consumption": 0.7,
+    "holding_cost": 0.15,
+    "v0": 0.05,
+    "v1": 1.0,
+    "a_pi": 1.0,
+    "b_pi": 9.0,
+    "mu_sd": 3.0,
+    "center_d_within_market": true,
+    "prior_weight": 0.005,
+    "lr": 0.001,
+    "batch_size": 256,
+    "epochs": 10,
+    "seed": 123,
+    "compile_train_step": false,
+    "force_cpu": true,
+    "households": 200,
+    "periods": 20,
+    "init_inventory": 1.0,
+    "availability_prob": 0.85
+  },
+  "train": {
+    "halo_frozen": true,
+    "n_obs": 4000,
+    "num_items": 8,
+    "num_markets": 12
+  },
+  "learned": {
+    "pi_hat": 0.09327162057161331,
+    "std_mu": 0.09434118866920471,
+    "mean_abs_d": 0.13597354292869568,
+    "max_abs_d": 0.1557510793209076
+  },
+  "support_rows": [
+    {
+      "tau": 0.1,
+      "pred_nz_rate": 0.9761904761904762,
+      "sensitivity": 0.9583333333333334,
+      "specificity": 0.016666666666666666,
+      "true_nz_rate": 0.2857142857142857
+    },
+    {
+      "tau": 0.12,
+      "pred_nz_rate": 0.8452380952380952,
+      "sensitivity": 0.7916666666666666,
+      "specificity": 0.13333333333333333,
+      "true_nz_rate": 0.2857142857142857
+    },
+    {
+      "tau": 0.14,
+      "pred_nz_rate": 0.4880952380952381,
+      "sensitivity": 0.4166666666666667,
+      "specificity": 0.48333333333333334,
+      "true_nz_rate": 0.2857142857142857
+    },
+    {
+      "tau": 0.15,
+      "pred_nz_rate": 0.21428571428571427,
+      "sensitivity": 0.25,
+      "specificity": 0.8,
+      "true_nz_rate": 0.2857142857142857
+    }
+  ]
+}

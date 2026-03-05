@@ -1,0 +1,27 @@
+[lu25] starting replication driver
+[lu25] output dir: results/part2/lu25_section4_rep10
+
+=== START DGP1  T=25  J=15  reps=10  R=50  jobs=4 ===
+=== DONE  DGP1  wrote: results/part2/lu25_section4_rep10/DGP1_T25_J15 ===
+BLP+CostIV    bias(beta_p)=+0.387 sd=0.104  bias(beta_w)=-0.063 sd=0.143  bias(sig)=-1.247 sd=0.341  bias(Int)=+0.226 sd=0.229  xi_mae=0.350 xi_sd=0.372  fail=0.00%
+BLP-NoCostIV  bias(beta_p)=-0.257 sd=1.037  bias(beta_w)=-0.035 sd=0.148  bias(sig)=-0.631 sd=1.782  bias(Int)=+0.302 sd=0.227  xi_mae=0.508 xi_sd=0.557  fail=0.00%
+Shrinkage     bias(beta_p)=-0.180 sd=0.069  bias(beta_w)=+0.023 sd=0.050  bias(sig)=-0.015 sd=0.137  bias(Int)=+0.077 sd=0.075  xi_mae=0.141 xi_sd=0.178  fail=0.00%
+
+=== START DGP2  T=25  J=15  reps=10  R=50  jobs=4 ===
+=== DONE  DGP2  wrote: results/part2/lu25_section4_rep10/DGP2_T25_J15 ===
+BLP+CostIV    bias(beta_p)=+0.348 sd=0.065  bias(beta_w)=-0.055 sd=0.134  bias(sig)=-1.362 sd=0.199  bias(Int)=+0.230 sd=0.209  xi_mae=0.360 xi_sd=0.396  fail=0.00%
+BLP-NoCostIV  bias(beta_p)=-0.482 sd=1.110  bias(beta_w)=-0.032 sd=0.138  bias(sig)=-0.218 sd=2.048  bias(Int)=+0.303 sd=0.209  xi_mae=0.569 xi_sd=0.640  fail=0.00%
+Shrinkage     bias(beta_p)=-0.162 sd=0.050  bias(beta_w)=+0.016 sd=0.055  bias(sig)=-0.009 sd=0.110  bias(Int)=+0.071 sd=0.082  xi_mae=0.131 xi_sd=0.160  fail=0.00%
+
+=== START DGP3  T=25  J=15  reps=10  R=50  jobs=4 ===
+=== DONE  DGP3  wrote: results/part2/lu25_section4_rep10/DGP3_T25_J15 ===
+BLP+CostIV    bias(beta_p)=+0.403 sd=0.130  bias(beta_w)=+0.006 sd=0.079  bias(sig)=-1.317 sd=0.350  bias(Int)=+0.133 sd=0.125  xi_mae=0.273 xi_sd=0.360  fail=0.00%
+BLP-NoCostIV  bias(beta_p)=-0.503 sd=1.217  bias(beta_w)=+0.031 sd=0.105  bias(sig)=-0.218 sd=2.048  bias(Int)=+0.196 sd=0.151  xi_mae=0.480 xi_sd=0.600  fail=0.00%
+Shrinkage     bias(beta_p)=-0.127 sd=0.047  bias(beta_w)=+0.096 sd=0.120  bias(sig)=-0.051 sd=0.106  bias(Int)=-0.039 sd=0.176  xi_mae=0.172 xi_sd=0.168  fail=0.00%
+
+=== START DGP4  T=25  J=15  reps=10  R=50  jobs=4 ===
+=== DONE  DGP4  wrote: results/part2/lu25_section4_rep10/DGP4_T25_J15 ===
+BLP+CostIV    bias(beta_p)=+0.363 sd=0.154  bias(beta_w)=+0.016 sd=0.101  bias(sig)=-1.252 sd=0.421  bias(Int)=+0.118 sd=0.150  xi_mae=0.274 xi_sd=0.357  fail=0.00%
+BLP-NoCostIV  bias(beta_p)=-0.497 sd=1.199  bias(beta_w)=+0.019 sd=0.156  bias(sig)=-0.218 sd=2.048  bias(Int)=+0.211 sd=0.230  xi_mae=0.503 xi_sd=0.611  fail=0.00%
+Shrinkage     bias(beta_p)=-0.062 sd=0.060  bias(beta_w)=+0.100 sd=0.131  bias(sig)=-0.079 sd=0.115  bias(Int)=-0.069 sd=0.194  xi_mae=0.174 xi_sd=0.155  fail=0.00%
+[lu25] done (exit=0) in 26600.9s

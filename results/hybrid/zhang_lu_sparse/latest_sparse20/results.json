@@ -1,0 +1,98 @@
+{
+  "config_used": {
+    "d_embed": 16,
+    "n_blocks": 2,
+    "n_heads": 2,
+    "residual_variant": "fixed_base",
+    "dropout": 0.0,
+    "lr": 0.002,
+    "batch_size": 256,
+    "epochs": 20,
+    "verbose": 1,
+    "l1_strength": 0.25,
+    "mu_sd": 5.0,
+    "center_d_within_market": true,
+    "tau_detect": 0.5,
+    "seed": 123,
+    "T": 25,
+    "J_inside": 15,
+    "N_t": 1000,
+    "sparse_frac_nonzero": 0.2,
+    "mu_sd_sim": 2.0,
+    "d_sd_sim": 1.0,
+    "taus": [
+      0.25,
+      0.35,
+      0.5
+    ]
+  },
+  "metrics": {
+    "DeepHalo-only": {
+      "nll": 2.4415228366851807,
+      "l1": 0.0,
+      "mu_ridge": 0.0,
+      "mean_abs_d": 0.0,
+      "std_d": 0.0,
+      "std_mu": 0.0
+    },
+    "Halo+mu": {
+      "nll": 2.282277822494507,
+      "l1": 0.0,
+      "mu_ridge": 0.024923227727413177,
+      "mean_abs_d": 0.0,
+      "std_d": 0.0,
+      "std_mu": 1.0840530395507812
+    },
+    "Full": {
+      "nll": 2.235273838043213,
+      "l1": 0.014524739235639572,
+      "mu_ridge": 0.02684207260608673,
+      "mean_abs_d": 0.05809895694255829,
+      "std_d": 0.20043180882930756,
+      "std_mu": 1.1401504278182983
+    }
+  },
+  "summary_rows": [
+    {
+      "model": "DeepHalo-only",
+      "nll": 2.4415228366851807,
+      "mean_abs_d": 0.0,
+      "std_mu": 0.0
+    },
+    {
+      "model": "Halo+mu",
+      "nll": 2.282277822494507,
+      "mean_abs_d": 0.0,
+      "std_mu": 1.0840530395507812
+    },
+    {
+      "model": "Full",
+      "nll": 2.235273838043213,
+      "mean_abs_d": 0.05809895694255829,
+      "std_mu": 1.1401504278182983
+    }
+  ],
+  "support_rows": [
+    {
+      "tau": 0.25,
+      "sensitivity": 0.3466666666666667,
+      "specificity": 0.9933333333333333,
+      "pred_nz": 0.07466666666666667,
+      "true_nz_rate": 0.2
+    },
+    {
+      "tau": 0.35,
+      "sensitivity": 0.29333333333333333,
+      "specificity": 1.0,
+      "pred_nz": 0.058666666666666666,
+      "true_nz_rate": 0.2
+    },
+    {
+      "tau": 0.5,
+      "sensitivity": 0.22666666666666666,
+      "specificity": 1.0,
+      "pred_nz": 0.04533333333333334,
+      "true_nz_rate": 0.2
+    }
+  ]
+}

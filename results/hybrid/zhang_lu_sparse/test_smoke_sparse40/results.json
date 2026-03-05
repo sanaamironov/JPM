@@ -1,0 +1,90 @@
+{
+  "config_used": {
+    "d_embed": 16,
+    "n_blocks": 2,
+    "n_heads": 2,
+    "residual_variant": "fixed_base",
+    "dropout": 0.0,
+    "lr": 0.002,
+    "batch_size": 256,
+    "epochs": 3,
+    "verbose": 0,
+    "l1_strength": 0.25,
+    "mu_sd": 5.0,
+    "center_d_within_market": true,
+    "tau_detect": 0.5,
+    "seed": 123,
+    "T": 8,
+    "J_inside": 6,
+    "N_t": 200,
+    "sparse_frac_nonzero": 0.4,
+    "mu_sd_sim": 2.0,
+    "d_sd_sim": 1.0,
+    "taus": [
+      0.25,
+      0.5
+    ]
+  },
+  "metrics": {
+    "DeepHalo-only": {
+      "nll": 0.9610974192619324,
+      "l1": 0.0,
+      "mu_ridge": 0.0,
+      "mean_abs_d": 0.0,
+      "std_d": 0.0,
+      "std_mu": 0.0
+    },
+    "Halo+mu": {
+      "nll": 0.959012508392334,
+      "l1": 0.0,
+      "mu_ridge": 1.5709725630586036e-05,
+      "mean_abs_d": 0.0,
+      "std_d": 0.0,
+      "std_mu": 0.026489201933145523
+    },
+    "Full": {
+      "nll": 0.9483163952827454,
+      "l1": 0.0018577070441097021,
+      "mu_ridge": 8.933057688409463e-05,
+      "mean_abs_d": 0.0074308281764388084,
+      "std_d": 0.013887436129152775,
+      "std_mu": 0.06178521364927292
+    }
+  },
+  "summary_rows": [
+    {
+      "model": "DeepHalo-only",
+      "nll": 0.9610974192619324,
+      "mean_abs_d": 0.0,
+      "std_mu": 0.0
+    },
+    {
+      "model": "Halo+mu",
+      "nll": 0.959012508392334,
+      "mean_abs_d": 0.0,
+      "std_mu": 0.026489201933145523
+    },
+    {
+      "model": "Full",
+      "nll": 0.9483163952827454,
+      "mean_abs_d": 0.0074308281764388084,
+      "std_mu": 0.06178521364927292
+    }
+  ],
+  "support_rows": [
+    {
+      "tau": 0.25,
+      "sensitivity": 0.0,
+      "specificity": 1.0,
+      "pred_nz": 0.0,
+      "true_nz_rate": 0.3333333333333333
+    },
+    {
+      "tau": 0.5,
+      "sensitivity": 0.0,
+      "specificity": 1.0,
+      "pred_nz": 0.0,
+      "true_nz_rate": 0.3333333333333333
+    }
+  ]
+}
