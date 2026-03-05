@@ -19,117 +19,93 @@ This repository contains my implementation and report artifacts for **Question 3
 - **Bonus 1:** A *toy* dynamic discrete choice demo for storable goods/stockpiling (context + sparse shocks + continuation value baseline), with smoke tests and saved artifacts.
 
 All runnable entry points write outputs under `results/` by default.
+# JPM Take-Home: Discrete Choice / Demand Estimation (Part 1 + Part 2)
 
----
-## Quickstart
+## Reviewer Quickstart 
+**Recommended:** Python 3.10 on macOS/Linux.
 
 ```bash
-python -m pip install -e ".[dev]"
-python -m unittest discover -s tests -p "test*.py" -v
-jpmq3-run-all --smoke
-jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke
-jpmq3-run-bonus1
-
-## 1) Installation
-
-### Option A: Conda (recommended)
-```bash
-conda create -n jpm python=3.10 -y
-conda activate jpm
-pip install -e ".[dev]"
-
-### Option B: venv
-```bash
+# 1) Create and activate a virtualenv
 python -m venv .venv
 source .venv/bin/activate
+pip install -U pip
+
+# 2) Install the package (editable) + dev deps
 pip install -e ".[dev]"
-```
-Notes
-This repo targets Python 3.10.
-On macOS Apple Silicon, TensorFlow uses the Metal backend; you may see Metal device logs.
 
-### CLI commands (installed via pyproject.toml)
-  ```bash
-After pip install -e ., these commands are available:
+# 3) Run unit tests (fast)
+pytest -q
 
-jpmq3-run-all — runs the full Question 3 workflow (supports --smoke)
-
-jpmq3-replicate-lu25 — Lu(25) Section 4 replication driver (BLP ± CostIV + Shrinkage via tfp.mcmc)
-
-jpmq3-format-lu25-tables — formats replication outputs into paper-style LaTeX tables
-
-jpmq3-run-lu25-choicelearn — runs the Choice-Learn extension version of Lu(25) Section 4 (if needed)
-
-jpmq3-run-bonus1 — runs Bonus 1 dynamic demo (storable goods)
+# 4) Part 2 (Lu & Shimizu 2025, Section 4) smoke run
+jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke
 ```
 
+### Where to look for outputs
 
-## 2) Run Unit Tests
-Run all tests (Part 1 + Part 2 + bonus):
+After the smoke run, open:
+
+* `results/part2/lu25_smoke/DGP*_T*_J*/paper_table_like.csv`
+* `results/part2/lu25_smoke/DGP*_T*_J*/summary.csv`
+
+Each grid cell writes:
+
+* `paper_table_like.csv`: Bias/SD rows in a paper-like layout
+* `summary.csv`: long-format metrics
+* `config.json`: true parameters + metadata
+
+## What this submission contains
+
+### Part 2 (Main replication deliverable)
+
+Replication driver for Lu & Shimizu (2025) Section 4 simulation study.
+
+* CLI entry point: `jpmq3-replicate-lu25`
+* Canonical driver: `src/jpm_q3/lu25/experiments/replicate_section4.py`
+* Table aggregation: `jpmq3-format-lu25-tables`
+
+Run a single grid cell (more substantial than smoke, still reasonable):
+
 ```bash
-python -m unittest discover -s tests -p "test*.py" -v
-```
-Run only bonus tests:
-```bash
-python -m unittest discover -s tests/bonus -p "test*.py" -v
-```
-
-## 3) Part 1 — DeepHalo (Zhang 2025)
-What’s implemented
-choice_learn_ext.models.deep_context.DeepHalo supports two code paths:
-    1. authors_mode=True: TensorFlow port of the authors’ released design (AuthorsFeaturelessNetTF / AuthorsFeatureBasedNetTF)
-  2. authors_mode=False: simplified permutation-equivariant halo stack (BaseEncoder + HaloBlock) kept as an ablation/diagnostic
- 
- Run the Part 1 experiment suite (smoke)
- ```bash
- jpmq3-run-all --smoke
-```
-Outputs are written under:
-  results/ (top-level suite outputs)
-plus any Part-1-specific subfolders created by the experiment drivers
-
-## 4) Lu & Shimizu (2025) Section 4 replication
-Smoke run (fast)
- ```bash
- jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke```
-
-Example debug run (single DGP cell)
- ```bash
 jpmq3-replicate-lu25 \
-  --out results/part2/lu25_debug \
+  --out results/part2/lu25_onecell \
   --grid DGP2:25:15 \
-  --n-reps 1 \
-  --R-mc 10 \
-  --n-jobs 1 \
-  --seed 0 \
-  --shrink-n-iter 50 \
-  --shrink-burn 25 \
-  --shrink-thin 1
-  ```
-  
-  Per grid cell outputs:
-    summary.csv
-    paper_table_like.csv
-    config.json
-  Saved under:
-    results/part2/<run_name>/<DGP>_T<T>_J<J>/
-    
-## 5) Part 2(d) Hybrid — Zhang-Sparse (DeepHalo + sparse shocks)
-Smoke tests (also writes artifacts):
- ```bash
-python -m unittest tests.part2.test_zhang_lu_sparse_smoke -v
-``` 
-## 6) Bonus 1 — Storable goods / stockpiling (toy demo)
-Run the demo:
- ```bash
-python -m jpm_q3.bonus1.dynamic_model.run_demo
-``` 
-Smoke tests:
- ```bash
-python -m unittest tests.bonus.test_bonus1_dynamic_smoke -v
+  --n-reps 10 \
+  --R-mc 50 \
+  --n-jobs 1
 ```
-Notes (macOS / Apple Silicon):
-  TensorFlow may print Metal device logs; this is expected. If you need CPU-only for a run, set:
-   ```bash
-  export BONUS1_FORCE_CPU=1
-  ```
+
+Aggregate tables across all cells under a run directory:
+
+```bash
+jpmq3-format-lu25-tables --in results/part2/lu25_onecell
+```
+
+### Part 1 (DeepHalo / context-dependent model)
+
+Part 1 code lives under `src/jpm_q3/deephalo/` (and extensions under `src/choice_learn_ext/` if present). The report describes the model, training, and evaluation choices.
+
+### Optional extensions (not part of the core evaluation)
+
+This repo may include optional “bonus” code. It is presented as a **prototype / minimal working example** (small-scale simulated demonstration), and is not required to evaluate Parts 1–2.
+
+## Repository map
+
+* `src/jpm_q3/`
+
+  * `cli/` — command-line entry points
+  * `lu25/` — Part 2 replication (Lu & Shimizu 2025)
+  * `deephalo/` — Part 1 model code
+* `tests/` — unit tests
+* `results/` — precomputed outputs (kept for reviewer convenience)
+* `Report.pdf` — write-up / methodology / results
+
+## Installation notes and dependency stability
+
+This project uses scientific Python + ML dependencies (notably TensorFlow / TensorFlow Probability). If you encounter installation issues on your machine, the fastest workaround is to use a clean Python 3.10 environment.
+
+If you want stricter reproducibility, pin versions using a `requirements.txt`/lockfile. For review, the Quickstart path above is the intended route.
+
+## Troubleshooting
+
+* **Multiprocessing:** for macOS, the replication driver uses the `spawn` start method for safety. If you set `--n-jobs > 1`, also set `--threads-per-job=1` to avoid oversubscription.
+* **TensorFlow log noise:** the CLI wrapper suppresses TF device banner logs by default. To see full TF logs, set `JPM_TF_LOG_LEVEL=0` before running.
