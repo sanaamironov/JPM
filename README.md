@@ -41,6 +41,12 @@ pytest -q
 
 # 4) Part 2 (Lu & Shimizu 2025, Section 4) smoke run
 jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke
+
+# 5) Part 1 experiments (smoke)
+jpmq3-part1-experiments --smoke --out results/part1/part1_smoke
+
+# 6) Part 1 experiments (selected)
+jpmq3-part1-experiments --only reproduce_table1,decoy_effect --out results/part1/part1_selected
 ```
 
 ### Where to look for outputs
@@ -65,6 +71,7 @@ jpmq3-replicate-lu25 = "jpm_q3.cli.replicate_lu25:main"
 jpmq3-format-lu25-tables = "jpm_q3.lu25.experiments.format_section4_tables:main"
 jpmq3-run-lu25-choicelearn = "choice_learn_ext.models.lu25_sparse_shocks.lu25_section4_choicelearn:main"
 jpmq3-run-bonus1 = "jpm_q3.bonus1.dynamic_model.run_demo:main"
+jpmq3-part1-experiments = "jpm_q3.cli.part1_experiments:main"
 ```
 ### Part 2 (Main replication deliverable)
 
