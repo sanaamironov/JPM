@@ -45,14 +45,6 @@ pip-wheel-metadata/
 .ipynb_checkpoints/
 
 # ----------------------------
-# Local results / generated outputs
-# ----------------------------
-results/
-results_final/    # delete this line if you DO want to commit curated outputs
-outputs/
-logs/
-
-# ----------------------------
 # Data (optional - keep only if you don't want data in git)
 # ----------------------------
 data/
