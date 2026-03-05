@@ -21,16 +21,24 @@ This repository contains my implementation and report artifacts for **Question 3
 All runnable entry points write outputs under `results/` by default.
 
 ---
+## Quickstart
 
-## 1) Environment setup (recommended)
+```bash
+python -m pip install -e ".[dev]"
+python -m unittest discover -s tests -p "test*.py" -v
+jpmq3-run-all --smoke
+jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke
+jpmq3-run-bonus1
 
-### Option A: Conda (Python 3.10)
+## 1) Installation
+
+### Option A: Conda (recommended)
 ```bash
 conda create -n jpm python=3.10 -y
 conda activate jpm
 pip install -e ".[dev]"
 
-### Option B: venv (Python 3.10)
+### Option B: venv
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -40,17 +48,19 @@ Notes
 This repo targets Python 3.10.
 On macOS Apple Silicon, TensorFlow uses the Metal backend; you may see Metal device logs.
 
-### Option C: Installed CLI commands
+### CLI commands (installed via pyproject.toml)
   ```bash
 After pip install -e ., these commands are available:
 
-jpmq3-run-all — runs the end-to-end exercise suite (supports --smoke)
+jpmq3-run-all — runs the full Question 3 workflow (supports --smoke)
 
-jpmq3-replicate-lu25 — Lu(25) Section 4 replication driver
+jpmq3-replicate-lu25 — Lu(25) Section 4 replication driver (BLP ± CostIV + Shrinkage via tfp.mcmc)
 
 jpmq3-format-lu25-tables — formats replication outputs into paper-style LaTeX tables
 
-jpmq3-run-lu25-choicelearn — optional choice-learn extension runner (if present)
+jpmq3-run-lu25-choicelearn — runs the Choice-Learn extension version of Lu(25) Section 4 (if needed)
+
+jpmq3-run-bonus1 — runs Bonus 1 dynamic demo (storable goods)
 ```
 
 
