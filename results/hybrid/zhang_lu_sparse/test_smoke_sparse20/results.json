@@ -1,0 +1,90 @@
+{
+  "config_used": {
+    "d_embed": 16,
+    "n_blocks": 2,
+    "n_heads": 2,
+    "residual_variant": "fixed_base",
+    "dropout": 0.0,
+    "lr": 0.002,
+    "batch_size": 256,
+    "epochs": 3,
+    "verbose": 0,
+    "l1_strength": 0.25,
+    "mu_sd": 5.0,
+    "center_d_within_market": true,
+    "tau_detect": 0.5,
+    "seed": 123,
+    "T": 8,
+    "J_inside": 6,
+    "N_t": 200,
+    "sparse_frac_nonzero": 0.2,
+    "mu_sd_sim": 2.0,
+    "d_sd_sim": 1.0,
+    "taus": [
+      0.25,
+      0.5
+    ]
+  },
+  "metrics": {
+    "DeepHalo-only": {
+      "nll": 1.5448848009109497,
+      "l1": 0.0,
+      "mu_ridge": 0.0,
+      "mean_abs_d": 0.0,
+      "std_d": 0.0,
+      "std_mu": 0.0
+    },
+    "Halo+mu": {
+      "nll": 1.5277318954467773,
+      "l1": 0.0,
+      "mu_ridge": 1.9087874534307048e-05,
+      "mean_abs_d": 0.0,
+      "std_d": 0.0,
+      "std_mu": 0.030845528468489647
+    },
+    "Full": {
+      "nll": 1.5162246227264404,
+      "l1": 0.002541847061365843,
+      "mu_ridge": 9.66449297266081e-05,
+      "mean_abs_d": 0.010167388245463371,
+      "std_d": 0.01621130481362343,
+      "std_mu": 0.06917203962802887
+    }
+  },
+  "summary_rows": [
+    {
+      "model": "DeepHalo-only",
+      "nll": 1.5448848009109497,
+      "mean_abs_d": 0.0,
+      "std_mu": 0.0
+    },
+    {
+      "model": "Halo+mu",
+      "nll": 1.5277318954467773,
+      "mean_abs_d": 0.0,
+      "std_mu": 0.030845528468489647
+    },
+    {
+      "model": "Full",
+      "nll": 1.5162246227264404,
+      "mean_abs_d": 0.010167388245463371,
+      "std_mu": 0.06917203962802887
+    }
+  ],
+  "support_rows": [
+    {
+      "tau": 0.25,
+      "sensitivity": 0.0,
+      "specificity": 1.0,
+      "pred_nz": 0.0,
+      "true_nz_rate": 0.16666666666666666
+    },
+    {
+      "tau": 0.5,
+      "sensitivity": 0.0,
+      "specificity": 1.0,
+      "pred_nz": 0.0,
+      "true_nz_rate": 0.16666666666666666
+    }
+  ]
+}
