@@ -58,7 +58,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Replicate Lu(25) Section 4 simulation study (wrapper).",
         add_help=True,
     )
-    parser.add_argument("--smoke", action="store_true", help="Run a tiny, fast smoke test.")
+    parser.add_argument(
+        "--smoke", action="store_true", help="Run a tiny, fast smoke test."
+    )
     parser.add_argument(
         "--out",
         type=str,
