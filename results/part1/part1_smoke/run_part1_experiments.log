@@ -1,0 +1,137 @@
+Part 1 experiments log
+CWD: /Users/sanaa/Dev/github/JPM
+PYTHON: /opt/homebrew/Caskroom/miniforge/base/envs/jpm-clean/bin/python3.10
+OUT: results/part1/part1_smoke
+TIME: 2026-03-05T11:36:00.879786
+
+
+==========================================================================================
+RUN:    reproduce_table1
+MODULE: jpm_q3.zhang25.experiments.reproduce_table1
+CMD:    /opt/homebrew/Caskroom/miniforge/base/envs/jpm-clean/bin/python3.10 -m jpm_q3.zhang25.experiments.reproduce_table1
+TIME:   2026-03-05T11:36:00.879882
+==========================================================================================
+Epoch 001 NLL: 0.7971
+Epoch 002 NLL: 0.7782
+Epoch 003 NLL: 0.7363
+Epoch 004 NLL: 0.6976
+Epoch 005 NLL: 0.6778
+Epoch 006 NLL: 0.6721
+Epoch 007 NLL: 0.668
+Epoch 008 NLL: 0.6693
+Epoch 009 NLL: 0.6645
+Epoch 010 NLL: 0.6658
+Epoch 011 NLL: 0.6667
+Epoch 012 NLL: 0.6658
+Epoch 013 NLL: 0.6654
+Epoch 014 NLL: 0.6661
+Epoch 015 NLL: 0.6674
+Epoch 016 NLL: 0.6657
+Epoch 017 NLL: 0.6649
+Epoch 018 NLL: 0.6682
+Epoch 019 NLL: 0.6673
+Epoch 020 NLL: 0.6653
+Epoch 021 NLL: 0.6671
+Epoch 022 NLL: 0.667
+Epoch 023 NLL: 0.6655
+Epoch 024 NLL: 0.6664
+Epoch 025 NLL: 0.6668
+Epoch 026 NLL: 0.6652
+Epoch 027 NLL: 0.6642
+Epoch 028 NLL: 0.6651
+Epoch 029 NLL: 0.6651
+Epoch 030 NLL: 0.6654
+Epoch 031 NLL: 0.6659
+Epoch 032 NLL: 0.6648
+Epoch 033 NLL: 0.6647
+Epoch 034 NLL: 0.6647
+Epoch 035 NLL: 0.666
+Epoch 036 NLL: 0.6677
+Epoch 037 NLL: 0.6703
+Epoch 038 NLL: 0.6701
+Epoch 039 NLL: 0.6712
+Epoch 040 NLL: 0.6692
+Epoch 041 NLL: 0.6652
+Epoch 042 NLL: 0.6659
+Epoch 043 NLL: 0.6636
+Epoch 044 NLL: 0.664
+Epoch 045 NLL: 0.6645
+Epoch 046 NLL: 0.6649
+Epoch 047 NLL: 0.6645
+Epoch 048 NLL: 0.6647
+Epoch 049 NLL: 0.6637
+Epoch 050 NLL: 0.6637
+Epoch 051 NLL: 0.6638
+Epoch 052 NLL: 0.6642
+Epoch 053 NLL: 0.6637
+Epoch 054 NLL: 0.6647
+Epoch 055 NLL: 0.6634
+Epoch 056 NLL: 0.6631
+Epoch 057 NLL: 0.6636
+Epoch 058 NLL: 0.6643
+Epoch 059 NLL: 0.6639
+Epoch 060 NLL: 0.6644
+Epoch 061 NLL: 0.666
+Epoch 062 NLL: 0.6637
+Epoch 063 NLL: 0.6652
+Epoch 064 NLL: 0.6643
+Epoch 065 NLL: 0.6643
+Epoch 066 NLL: 0.6629
+Epoch 067 NLL: 0.6643
+Epoch 068 NLL: 0.6635
+Epoch 069 NLL: 0.6638
+Epoch 070 NLL: 0.6636
+Epoch 071 NLL: 0.6641
+Epoch 072 NLL: 0.6645
+Epoch 073 NLL: 0.6637
+Epoch 074 NLL: 0.6639
+Epoch 075 NLL: 0.6644
+Epoch 076 NLL: 0.6643
+Epoch 077 NLL: 0.6651
+Epoch 078 NLL: 0.6643
+Epoch 079 NLL: 0.6636
+Epoch 080 NLL: 0.6638
+Epoch 081 NLL: 0.6636
+Epoch 082 NLL: 0.6642
+Epoch 083 NLL: 0.664
+Epoch 084 NLL: 0.6645
+Epoch 085 NLL: 0.6639
+Epoch 086 NLL: 0.6649
+Epoch 087 NLL: 0.664
+Epoch 088 NLL: 0.6651
+Epoch 089 NLL: 0.6649
+Epoch 090 NLL: 0.6657
+Epoch 091 NLL: 0.6653
+Epoch 092 NLL: 0.665
+Epoch 093 NLL: 0.6629
+Epoch 094 NLL: 0.6639
+Epoch 095 NLL: 0.662
+Epoch 096 NLL: 0.6646
+Epoch 097 NLL: 0.6633
+Epoch 098 NLL: 0.6636
+Epoch 099 NLL: 0.6637
+Epoch 100 NLL: 0.6645
+Training data:
+ available: (11000, 4)
+ choices:   (11000,)
+ item_ids:  (11000, 4)
+
+=== Target vs Predicted ===
+S=(1, 2)        target=[0.98 0.02 0.   0.  ]  pred=[0.977 0.023 0.    0.   ]
+S=(1, 3)        target=[0.5 0.  0.5 0. ]  pred=[0.53 0.   0.47 0.  ]
+S=(1, 4)        target=[0.5 0.  0.  0.5]  pred=[0.519 0.    0.    0.481]
+S=(2, 3)        target=[0.  0.5 0.5 0. ]  pred=[0.    0.516 0.484 0.   ]
+S=(2, 4)        target=[0.  0.5 0.  0.5]  pred=[0.    0.448 0.    0.552]
+S=(3, 4)        target=[0.  0.  0.9 0.1]  pred=[0.    0.    0.922 0.078]
+S=(1, 2, 3)     target=[0.49 0.01 0.5  0.  ]  pred=[0.509 0.008 0.483 0.   ]
+S=(1, 2, 4)     target=[0.49 0.01 0.   0.5 ]  pred=[0.475 0.009 0.    0.516]
+S=(1, 3, 4)     target=[0.5  0.   0.45 0.05]  pred=[0.494 0.    0.455 0.051]
+S=(2, 3, 4)     target=[0.   0.5  0.45 0.05]  pred=[0.    0.487 0.467 0.046]
+S=(1, 2, 3, 4)  target=[0.49 0.01 0.45 0.05]  pred=[0.498 0.014 0.427 0.061]
+
+Saved:
+ - /Users/sanaa/Dev/github/JPM/results/table1_predictions.csv
+ - /Users/sanaa/Dev/github/JPM/results/figures/heatmap_target.png
+ - /Users/sanaa/Dev/github/JPM/results/figures/heatmap_predicted.png
+
+[EXIT CODE] 0
