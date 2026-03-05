@@ -2,23 +2,36 @@
 requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
-
 [project]
 name = "jpm-q3"
 version = "0.1.0"
-description = "Q3 submission package: DeepHalo (Zhang 2025), Lu 2025 replication, and hybrid extensions."
+description = "JPM Q3 submission: DeepHalo (Zhang 2025), Lu & Shimizu (2025) Section 4 replication, and optional extensions."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.12"
+
 dependencies = [
-  "numpy",
-  "pandas",
-  "tensorflow",
-  "tensorflow-probability",
-  "choice-learn",
+  "numpy>=1.23,<2.0",
+  "pandas>=2.0,<3.0",
+  "scipy>=1.9,<2.0",
+  "tqdm>=4.0,<5.0",
+
+  # TensorFlow stack (platform-aware)
+  "tensorflow-macos==2.16.2; platform_system=='Darwin' and platform_machine=='arm64'",
+  "tensorflow==2.16.2; platform_system=='Darwin' and platform_machine=='arm64'",
+  "tensorflow==2.16.2; platform_system!='Darwin' or platform_machine!='arm64'",
+
+  # Use the TF extra for fewer compatibility surprises
+  "tensorflow-probability[tf]==0.24.*",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov"]
+dev = [
+  "pytest>=7.0,<9.0",
+  "pytest-cov>=4.0,<6.0",
+]
+choicelearn = [
+  "choice-learn>=1.0.0,<2.0",
+]
 
 [project.scripts]
 jpmq3-run-all = "jpm_q3.cli.run_all:main"
@@ -27,8 +40,14 @@ jpmq3-format-lu25-tables = "jpm_q3.lu25.experiments.format_section4_tables:main"
 jpmq3-run-lu25-choicelearn = "choice_learn_ext.models.lu25_sparse_shocks.lu25_section4_choicelearn:main"
 jpmq3-run-bonus1 = "jpm_q3.bonus1.dynamic_model.run_demo:main"
 
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["jpm_q3", "choice_learn_ext", "jpm_q3_bonus1"]
+include = ["jpm_q3*", "choice_learn_ext*"]
 exclude = ["tests*", "docs*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

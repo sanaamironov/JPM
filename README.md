@@ -25,13 +25,16 @@ All runnable entry points write outputs under `results/` by default.
 **Recommended:** Python 3.10 on macOS/Linux.
 
 ```bash
-# 1) Create and activate a virtualenv
-python -m venv .venv
-source .venv/bin/activate
-pip install -U pip
+conda deactivate || true
+# 1) Create and activate a virtualenv, I use Conda
+conda create -n jpm-mironov python=3.10 -y
+#python -m venv .venv
+conda activate jpm-mironov
+python -m pip install -U pip
+python -m pip install "tensorflow-macos==2.16.2" "tensorflow==2.16.2" "tensorflow-probability==0.24.*"
 
 # 2) Install the package (editable) + dev deps
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 
 # 3) Run unit tests (fast)
 pytest -q
@@ -54,7 +57,15 @@ Each grid cell writes:
 * `config.json`: true parameters + metadata
 
 ## What this submission contains
-
+```bash
+#To run all the different parts of the project you can use the scripts below
+[project.scripts]
+jpmq3-run-all = "jpm_q3.cli.run_all:main"
+jpmq3-replicate-lu25 = "jpm_q3.cli.replicate_lu25:main"
+jpmq3-format-lu25-tables = "jpm_q3.lu25.experiments.format_section4_tables:main"
+jpmq3-run-lu25-choicelearn = "choice_learn_ext.models.lu25_sparse_shocks.lu25_section4_choicelearn:main"
+jpmq3-run-bonus1 = "jpm_q3.bonus1.dynamic_model.run_demo:main"
+```
 ### Part 2 (Main replication deliverable)
 
 Replication driver for Lu & Shimizu (2025) Section 4 simulation study.
