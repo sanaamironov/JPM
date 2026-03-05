@@ -1,0 +1,17 @@
+# Runtime requirements (pinned for reviewer reproducibility)
+# Tested: macOS Apple Silicon, Python 3.10
+
+numpy>=1.23,<2.0
+pandas>=2.0,<3.0
+scipy>=1.9,<2.0
+tqdm>=4.0,<5.0
+
+# choice-learn is only needed if reviewer runs the choice-learn CLI; otherwise optional
+choice-learn>=1.0.0,<2.0
+
+# TensorFlow stack
+tensorflow-macos==2.16.2; platform_system=="Darwin" and platform_machine=="arm64"
+tensorflow==2.16.2; platform_system=="Darwin" and platform_machine=="arm64"
+tensorflow==2.16.2; platform_system!="Darwin" or platform_machine!="arm64"
+
+tensorflow-probability[tf]==0.24.*
