@@ -9,9 +9,6 @@
     <img src="https://img.shields.io/badge/Sanaa_Mironov-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white" alt="Sanaa Mironov">
   </a>
 </p>
-
-# JPM Take-Home: Discrete Choice / Demand Estimation (Part 1 + Part 2 +  Bonus Questiopn)
-
 This repository contains my submission for the JPM take-home assignment. It is organized for **reviewer reproducibility**: there is a single “golden path” that installs, runs a quick smoke test, and produces the expected output tables.
 
 ## Reviewer Quickstart
