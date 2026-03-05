@@ -10,7 +10,7 @@
   </a>
 </p>
 
-# JPM — MLCOE Internship Exercises (Question 3)
+## MLCOE Internship Exercises (Question 3)
 
 This repository contains my implementation and report artifacts for **Question 3 (Discrete choice models & credit card offers)**:
 
