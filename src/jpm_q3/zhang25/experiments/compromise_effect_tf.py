@@ -94,8 +94,8 @@ def main():
             mask[j] = 1.0
         eval_available.append(mask)
 
-    eval_available = tf.convert_to_tensor(np.stack(eval_available))
-    eval_item_ids = tf.convert_to_tensor(np.tile(np.arange(J), (len(eval_sets), 1)))
+    eval_available = tf.convert_to_tensor(np.stack(eval_available), dtype=tf.float32)
+    eval_item_ids = tf.convert_to_tensor(np.tile(np.arange(J, dtype=np.int32), (len(eval_sets), 1)))
 
     probs = trainer.predict_probs(eval_available, eval_item_ids).numpy()
 

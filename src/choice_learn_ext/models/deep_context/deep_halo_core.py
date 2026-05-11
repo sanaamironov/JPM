@@ -1,5 +1,3 @@
-# src/jpm/question_3/choice_learn_ext/models/deep_context/model.py
-
 from __future__ import annotations
 
 from typing import Dict
@@ -54,7 +52,7 @@ class DeepHalo(tf.keras.Model):
                 log_probs = out["log_probs"]
                 return {"utilities": u, "log_probs": log_probs}
             else:
-                X = tf.convert_to_tensor(inputs["X"])
+                X = tf.cast(inputs["X"], tf.float32)
                 out = self.authors_net(X, avail, training=training)
                 u = out["logits"]
                 log_probs = out["log_probs"]

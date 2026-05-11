@@ -1,5 +1,3 @@
-# src/jpm/question_3/choice_learn_ext/models/deep_context/utils.py
-
 from __future__ import annotations
 
 import platform
@@ -12,26 +10,18 @@ def masked_mean(x: tf.Tensor, mask: tf.Tensor, axis: int = 1) -> tf.Tensor:
     """
     Compute mean along `axis`, only where mask == 1.
 
-    x:    (..., J, d)
-    mask: (..., J)
+    x:    (B, J, d)
+    mask: (B, J)
     axis: axis over items (usually 1)
 
     Returns:
-        (..., d)
+        (B, d)
     """
-    x = tf.convert_to_tensor(x)
-    mask = tf.cast(mask, x.dtype)  # (..., J)
-
-    # Expand mask so it can multiply x
-    while len(mask.shape) < len(x.shape):
-        mask = tf.expand_dims(mask, axis=-1)  # (..., J, 1)
-
-    # Sum over items
-    num = tf.reduce_sum(x * mask, axis=axis)  # (..., d)
-    den = tf.reduce_sum(mask, axis=axis)  # (..., 1)
-
-    den = tf.maximum(den, tf.constant(1.0, dtype=x.dtype))
-    # Broadcasting: (..., d) / (..., 1) -> (..., d)
+    x = tf.cast(x, tf.float32)
+    mask = tf.cast(mask, tf.float32)  # (B, J)
+    mask = tf.expand_dims(mask, axis=-1)  # (B, J, 1) — one trailing dim to broadcast over d
+    num = tf.reduce_sum(x * mask, axis=axis)  # (B, d)
+    den = tf.maximum(tf.reduce_sum(mask, axis=axis), 1.0)
     return num / den
 
 
@@ -43,8 +33,8 @@ def masked_softmax(logits: tf.Tensor,
     logits: [..., J]
     mask:   [..., J] broadcastable to logits
     """
-    logits = tf.convert_to_tensor(logits)
-    mask = tf.cast(mask, logits.dtype)
+    logits = tf.cast(logits, tf.float32)
+    mask = tf.cast(mask, tf.float32)
 
     # Put -inf on masked-out items so softmax gives exactly 0 there.
     neg_inf = tf.constant(-1e9, dtype=logits.dtype)
@@ -64,9 +54,8 @@ def masked_log_softmax(logits: tf.Tensor,
     Returns log-probabilities over available items; unavailable items
     effectively have log-prob ~ -inf.
     """
-
-    logits = tf.convert_to_tensor(logits)
-    mask = tf.cast(mask, logits.dtype)
+    logits = tf.cast(logits, tf.float32)
+    mask = tf.cast(mask, tf.float32)
     neg_inf = tf.constant(-1e9, dtype=logits.dtype)
     masked_logits = tf.where(mask > 0, logits, neg_inf)
     return tf.nn.log_softmax(masked_logits, axis=axis)

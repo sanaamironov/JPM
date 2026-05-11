@@ -1,5 +1,3 @@
-# src/jpm/question_3/choice_learn_ext/models/deep_context/layers.py
-
 from __future__ import annotations
 
 from typing import Dict
@@ -10,6 +8,7 @@ from .config import DeepHaloConfig
 from .utils import masked_mean
 
 
+# A library of model components.
 class BaseEncoder(tf.keras.layers.Layer):
     """
     Shared encoder χ(x_j) -> z_j^{(0)}.
@@ -53,7 +52,7 @@ class BaseEncoder(tf.keras.layers.Layer):
             z = self.embedding(item_ids)  # (B, J, d_embed)
             return self.mlp(z, training=training)
         else:
-            X = tf.convert_to_tensor(inputs["X"])  # (B, J, d_x)
+            X = tf.cast(inputs["X"], tf.float32)  # (B, J, d_x)
             B = tf.shape(X)[0]
             J = tf.shape(X)[1]
             X_flat = tf.reshape(X, [B * J, self.cfg.d_x])
@@ -141,16 +140,11 @@ class HaloBlock(tf.keras.layers.Layer):
         z_next = self.layer_norm(z_next, training=training)
         return z_next
 
-    """       In standard mode: no difference.
-            In fixed_base mode: you’re using current layer representation to
-            build context and base representation in φ inputs.
-    """
-
-
 
 # -----------------------------------------------------------------------------
 # Authors-mode implementations (mirrors part_1/authors/*.py)
 # -----------------------------------------------------------------------------
+
 
 def _parse_block_types(spec: str, n_layers: int) -> list[str]:
     """
@@ -187,12 +181,18 @@ class ExaResBlockTF(tf.keras.layers.Layer):
 
     def __init__(self, input_dim: int, hidden_dim: int, name: str = "exa_res_block"):
         super().__init__(name=name)
-        self.linear_main = tf.keras.layers.Dense(hidden_dim, use_bias=False, name=f"{name}_linear_main")
-        self.linear_act = tf.keras.layers.Dense(hidden_dim, use_bias=False, name=f"{name}_linear_act")
+        self.linear_main = tf.keras.layers.Dense(
+            hidden_dim, use_bias=False, name=f"{name}_linear_main"
+        )
+        self.linear_act = tf.keras.layers.Dense(
+            hidden_dim, use_bias=False, name=f"{name}_linear_act"
+        )
         self._input_dim = input_dim
         self._hidden_dim = hidden_dim
 
-    def call(self, z_prev: tf.Tensor, z0: tf.Tensor, training: bool = False) -> tf.Tensor:
+    def call(
+        self, z_prev: tf.Tensor, z0: tf.Tensor, training: bool = False
+    ) -> tf.Tensor:
         # z_prev: (B, hidden_dim), z0: (B, input_dim)
         gate = self.linear_act(z0)
         return self.linear_main(z_prev * gate) + z_prev
@@ -240,7 +240,9 @@ class AuthorsFeaturelessNetTF(tf.keras.layers.Layer):
         self.blocks: list[tf.keras.layers.Layer] = []
         for i, t in enumerate(block_types):
             if t == "exa":
-                self.blocks.append(ExaResBlockTF(input_dim=J, hidden_dim=W, name=f"{name}_exa_{i}"))
+                self.blocks.append(
+                    ExaResBlockTF(input_dim=J, hidden_dim=W, name=f"{name}_exa_{i}")
+                )
             elif t == "qua":
                 self.blocks.append(QuaResBlockTF(d=W, name=f"{name}_qua_{i}"))
             else:
@@ -249,8 +251,8 @@ class AuthorsFeaturelessNetTF(tf.keras.layers.Layer):
     def call(self, avail: tf.Tensor, training: bool = False) -> Dict[str, tf.Tensor]:
         # avail: (B, J) in {0,1}
         mask = tf.cast(avail > 0.5, tf.bool)  # (B, J)
-        e0 = tf.cast(avail, tf.float32)       # (B, J)
-        z = self.in_lin(e0)                   # (B, W)
+        e0 = tf.cast(avail, tf.float32)  # (B, J)
+        z = self.in_lin(e0)  # (B, W)
 
         for b in self.blocks:
             if isinstance(b, ExaResBlockTF):
@@ -270,11 +272,19 @@ class NonlinearTransformationTF(tf.keras.layers.Layer):
     TensorFlow port of authors.FeatureBased.NonlinearTransformation.
     """
 
-    def __init__(self, H: int, embed: int, dropout: float = 0.0, name: str = "nonlinear_transformation"):
+    def __init__(
+        self,
+        H: int,
+        embed: int,
+        dropout: float = 0.0,
+        name: str = "nonlinear_transformation",
+    ):
         super().__init__(name=name)
         self.H = int(H)
         self.embed = int(embed)
-        self.fc1 = tf.keras.layers.Dense(self.embed * self.H, use_bias=True, name=f"{name}_fc1")
+        self.fc1 = tf.keras.layers.Dense(
+            self.embed * self.H, use_bias=True, name=f"{name}_fc1"
+        )
         self.fc2 = tf.keras.layers.Dense(self.embed, use_bias=True, name=f"{name}_fc2")
         self.dropout = tf.keras.layers.Dropout(dropout)
         self.enc_norm = tf.keras.layers.LayerNormalization(axis=-1, name=f"{name}_ln")
@@ -324,36 +334,53 @@ class AuthorsFeatureBasedNetTF(tf.keras.layers.Layer):
             ],
             name=f"{name}_basic_encoder",
         )
-        self.enc_norm = tf.keras.layers.LayerNormalization(axis=-1, name=f"{name}_enc_ln")
+        self.enc_norm = tf.keras.layers.LayerNormalization(
+            axis=-1, name=f"{name}_enc_ln"
+        )
 
         self.aggregate_linear = [
-            tf.keras.layers.Dense(H, use_bias=True, name=f"{name}_agg_{i}") for i in range(L)
+            tf.keras.layers.Dense(H, use_bias=True, name=f"{name}_agg_{i}")
+            for i in range(L)
         ]
         self.nonlinear = [
-            NonlinearTransformationTF(H=H, embed=embed, dropout=cfg.dropout, name=f"{name}_nt_{i}")
+            NonlinearTransformationTF(
+                H=H, embed=embed, dropout=cfg.dropout, name=f"{name}_nt_{i}"
+            )
             for i in range(L)
         ]
 
-        self.final_linear = tf.keras.layers.Dense(1, use_bias=True, name=f"{name}_final")
+        self.final_linear = tf.keras.layers.Dense(
+            1, use_bias=True, name=f"{name}_final"
+        )
 
-    def call(self, X: tf.Tensor, avail: tf.Tensor, training: bool = False) -> Dict[str, tf.Tensor]:
+    def call(
+        self, X: tf.Tensor, avail: tf.Tensor, training: bool = False
+    ) -> Dict[str, tf.Tensor]:
         # X: (B, J, d_x), avail: (B, J)
         valid = tf.cast(avail > 0.5, tf.float32)  # (B, J)
-        lengths = tf.reduce_sum(valid, axis=1)    # (B,)
+        lengths = tf.reduce_sum(valid, axis=1)  # (B,)
         # Avoid divide-by-zero (shouldn't happen in valid data)
         lengths = tf.maximum(lengths, 1.0)
 
-        Z = self.enc_norm(self.basic_encoder(X, training=training), training=training)  # (B, J, embed)
+        Z = self.enc_norm(
+            self.basic_encoder(X, training=training), training=training
+        )  # (B, J, embed)
         X0 = tf.identity(Z)  # fixed copy, like X = Z.clone()
 
         for fc, nt in zip(self.aggregate_linear, self.nonlinear):
             # fc(Z): (B, J, H) -> masked sum over items, divide by lengths
             Z_bar = fc(Z) * tf.expand_dims(valid, axis=-1)  # (B, J, H)
-            Z_bar = tf.reduce_sum(Z_bar, axis=1) / tf.expand_dims(lengths, axis=1)  # (B, H)
-            Z_bar = tf.expand_dims(tf.expand_dims(Z_bar, axis=1), axis=-1)  # (B, 1, H, 1)
+            Z_bar = tf.reduce_sum(Z_bar, axis=1) / tf.expand_dims(
+                lengths, axis=1
+            )  # (B, H)
+            Z_bar = tf.expand_dims(
+                tf.expand_dims(Z_bar, axis=1), axis=-1
+            )  # (B, 1, H, 1)
 
             phi = nt(X0, training=training)  # (B, J, H, embed)
-            phi = phi * tf.expand_dims(tf.expand_dims(valid, axis=-1), axis=-1)  # mask (B,J,1,1)
+            phi = phi * tf.expand_dims(
+                tf.expand_dims(valid, axis=-1), axis=-1
+            )  # mask (B,J,1,1)
 
             # (phi * Z_bar).sum(heads)/H + Z
             Z = tf.reduce_sum(phi * Z_bar, axis=2) / float(self.cfg.n_heads) + Z

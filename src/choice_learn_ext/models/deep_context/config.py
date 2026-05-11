@@ -1,5 +1,3 @@
-# src/jpm/question_3/choice_learn_ext/models/deep_context/config.py
-
 """
 Configuration object for the DeepHalo (Deep Context-Dependent Choice) model.
 This dataclass specifies all architectural and training-related hyperparameters.
