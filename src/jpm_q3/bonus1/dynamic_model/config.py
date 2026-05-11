@@ -5,49 +5,64 @@ from dataclasses import dataclass
 
 @dataclass
 class DynamicModelConfig:
-    # Choice-set dimensions
-    num_items: int = 8  # includes outside option at index 0
-    num_markets: int = 12
+    # ---- Problem dimensions (fixed by the revised question) ----
+    J: int = 5          # number of brands; item 0 is the outside option, items 1..J are brands
+    S_max: int = 5      # maximum inventory level (integer)
+    T: int = 20         # number of time periods
+    num_households: int = 100   # number of consumers I
 
-    # Deep context backbone (choice_learn_ext.models.deep_context)
+    # ---- True DGP parameters (known to data generator, recovered by estimator) ----
+    true_beta_price: float = -1.5   # true price sensitivity (negative: higher price lowers utility)
+    gamma_endogeneity: float = 0.5  # endogeneity strength: p_jt = c_j + gamma*xi_jt + noise
+    sigma_price_noise: float = 0.3  # std of idiosyncratic price noise eta_jt
+    sigma_alpha: float = 0.5        # std of brand fixed effects alpha_j
+    kappa_stockout: float = 2.0     # utility penalty for outside option when inventory = 0
+    delta_min: float = 0.70         # lower bound of consumer discount factor distribution
+    delta_max: float = 0.95         # upper bound of consumer discount factor distribution
+    min_avail: int = 3              # minimum number of brands in each choice set A_t
+
+    # ---- Sparse market-product shock DGP ----
+    sparse_frac: float = 0.30       # fraction of nonzero d_jt entries per market
+    mu_true_sd: float = 1.0         # std of market-level mean shock mu_t
+    d_true_sd: float = 0.8          # std of nonzero sparse deviation d_jt
+
+    # ---- DeepHalo backbone (Halo effect) ----
     d_embed: int = 16
     n_blocks: int = 2
     n_heads: int = 2
     residual_variant: str = "fixed_base"
     dropout: float = 0.0
 
-    # Dynamic component
-    discount: float = 0.95
-    inventory_scale: float = 10.0
-    td_weight: float = 0.2
+    # ---- Estimation parameters (used by estimator, not DGP) ----
+    # Common discount used in estimation (approximation; true delta_i are consumer-specific).
+    # Stated as a modeling assumption in the report.
+    discount: float = 0.90
+    beta_price_init: float = 0.0    # initialisation for price coefficient
 
-    # Storable-goods transition / economics
-    purchase_qty: float = 1.0
-    mean_consumption: float = 0.7
-    holding_cost: float = 0.15  # discourages stockpiling
-
-    # Lu-style sparse shock prior on d
-    # v0: float = 1e-3  # spike variance
-    v0: float = 0.05
-    v1: float = 1.0  # slab variance
+    # ---- Lu-style sparse shock prior ----
+    v0: float = 0.05        # spike variance
+    v1: float = 1.0         # slab variance
     a_pi: float = 1.0
-    b_pi: float = 9.0
-    mu_sd: float = 3.0
+    b_pi: float = 9.0       # prior mean pi ≈ 0.1 (sparse)
+    mu_sd: float = 3.0      # Gaussian prior std on mu_t
     center_d_within_market: bool = True
     prior_weight: float = 0.005
 
-    # Training
+    # ---- Training ----
     lr: float = 1e-3
     batch_size: int = 256
-    epochs: int = 10
+    epochs: int = 20
     seed: int = 123
     compile_train_step: bool = True
     force_cpu: bool = True
 
-    # Synthetic panel generation
-    households: int = 200
-    periods: int = 20
-    init_inventory: float = 1.0
+    # ---- Derived quantities (read-only) ----
+    @property
+    def num_items(self) -> int:
+        """Total number of choice options including outside option (index 0)."""
+        return self.J + 1
 
-    # Context: random availability to create choice-set variation
-    availability_prob: float = 0.85
+    @property
+    def num_markets(self) -> int:
+        """Number of markets = number of time periods T."""
+        return self.T

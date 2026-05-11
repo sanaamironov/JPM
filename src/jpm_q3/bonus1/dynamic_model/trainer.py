@@ -10,17 +10,18 @@ from .model import DynamicContextSparseChoiceModel
 
 
 class DynamicTrainer:
-    """Simple MAP trainer for the bonus dynamic + sparse shocks prototype."""
+    """MAP trainer for the dynamic storable-goods model."""
 
     def __init__(self, model: DynamicContextSparseChoiceModel, cfg: DynamicModelConfig):
         self.model = model
         self.cfg = cfg
         self.opt = tf.keras.optimizers.Adam(learning_rate=float(cfg.lr))
 
-        J = cfg.num_items
+        J = cfg.num_items   # J+1, including outside option
         _sig = {
             "item_ids":       tf.TensorSpec([None, J], tf.int32),
             "available":      tf.TensorSpec([None, J], tf.float32),
+            "price":          tf.TensorSpec([None, J], tf.float32),
             "market_id":      tf.TensorSpec([None],    tf.int32),
             "inventory":      tf.TensorSpec([None],    tf.float32),
             "choice":         tf.TensorSpec([None],    tf.int32),
@@ -28,6 +29,7 @@ class DynamicTrainer:
             "done":           tf.TensorSpec([None],    tf.float32),
             "next_item_ids":  tf.TensorSpec([None, J], tf.int32),
             "next_available": tf.TensorSpec([None, J], tf.float32),
+            "next_price":     tf.TensorSpec([None, J], tf.float32),
             "next_market_id": tf.TensorSpec([None],    tf.int32),
             "next_inventory": tf.TensorSpec([None],    tf.float32),
         }
@@ -39,30 +41,28 @@ class DynamicTrainer:
 
     def _train_step_eager(self, batch: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         cur = {
-            "item_ids": batch["item_ids"],
+            "item_ids":  batch["item_ids"],
             "available": batch["available"],
+            "price":     batch["price"],
             "market_id": batch["market_id"],
             "inventory": batch["inventory"],
-            "choice": batch["choice"],
+            "choice":    batch["choice"],
         }
         nxt = {
-            "item_ids": batch["next_item_ids"],
+            "item_ids":  batch["next_item_ids"],
             "available": batch["next_available"],
+            "price":     batch["next_price"],
             "market_id": batch["next_market_id"],
             "inventory": batch["next_inventory"],
         }
-        reward = batch["reward"]
-        done = batch["done"]
-
         with tf.GradientTape() as tape:
             parts = self.model.compute_loss(
                 inputs=cur,
                 next_inputs=nxt,
-                reward=reward,
-                done=done,
+                reward=batch["reward"],
+                done=batch["done"],
                 training=True,
             )
-
         grads = tape.gradient(parts["total"], self.model.trainable_variables)
         pairs = [
             (g, v)
@@ -83,21 +83,18 @@ class DynamicTrainer:
             .batch(int(self.cfg.batch_size))
             .prefetch(tf.data.AUTOTUNE)
         )
-
         for ep in range(1, int(self.cfg.epochs) + 1):
             m_total = tf.keras.metrics.Mean()
             m_nll = tf.keras.metrics.Mean()
-            m_td = tf.keras.metrics.Mean()
             m_prior = tf.keras.metrics.Mean()
 
             for batch in ds:
                 parts = self.train_step(batch)
                 m_total.update_state(parts["total"])
                 m_nll.update_state(parts["nll"])
-                m_td.update_state(parts["td"])
                 m_prior.update_state(parts["prior"])
 
             print(
                 f"Epoch {ep:03d} | total={m_total.result():.4f} "
-                f"nll={m_nll.result():.4f} td={m_td.result():.4f} prior={m_prior.result():.4f}"
+                f"nll={m_nll.result():.4f} prior={m_prior.result():.4f}"
             )

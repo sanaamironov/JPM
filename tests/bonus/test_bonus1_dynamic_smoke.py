@@ -1,7 +1,5 @@
 import os
-
-# Must be set BEFORE importing tensorflow to reduce TF startup spam.
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # hide INFO + WARNING
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
 
 import unittest
@@ -9,103 +7,198 @@ import warnings
 
 import numpy as np
 import tensorflow as tf
+
+warnings.filterwarnings("ignore", message=".*does not have a `build\\(\\)` method.*")
+warnings.filterwarnings("ignore", message=".*looks like it has unbuilt state.*")
+
 from jpm_q3.bonus1.dynamic_model.config import DynamicModelConfig
 from jpm_q3.bonus1.dynamic_model.data import simulate_dynamic_panel
 from jpm_q3.bonus1.dynamic_model.model import DynamicContextSparseChoiceModel
 from jpm_q3.bonus1.dynamic_model.trainer import DynamicTrainer
-
-warnings.filterwarnings(
-    "ignore", message=".*does not have a `build\\(\\)` method implemented.*"
-)
-warnings.filterwarnings("ignore", message=".*looks like it has unbuilt state.*")
+from jpm_q3.bonus1.dynamic_model.counterfactual import price_promotion_analysis
 
 
-class TestBonus1DynamicSmoke(unittest.TestCase):
+def _small_cfg(**kwargs) -> DynamicModelConfig:
+    """Tiny config for fast unit tests."""
+    defaults = dict(
+        J=3, S_max=3, T=5, num_households=20,
+        epochs=2, batch_size=64,
+        compile_train_step=False,
+        force_cpu=True, seed=7,
+    )
+    defaults.update(kwargs)
+    return DynamicModelConfig(**defaults)
+
+
+class TestBonus1DGP(unittest.TestCase):
     def setUp(self):
         np.random.seed(0)
         tf.random.set_seed(0)
-
-        # Make test logs quieter and more stable across machines.
-        tf.get_logger().setLevel("ERROR")
-
-        # Force CPU for deterministic + quiet unit tests (best-effort).
         try:
             tf.config.set_visible_devices([], "GPU")
         except Exception:
             pass
 
-    def test_availability_has_outside_and_at_least_two(self):
-        cfg = DynamicModelConfig(households=10, periods=5, num_items=8, seed=7)
-        data, _ = simulate_dynamic_panel(cfg)
+    def test_choice_sets_are_common_per_period(self):
+        """A_t must be the same for all consumers at time t."""
+        cfg = _small_cfg()
+        data, meta = simulate_dynamic_panel(cfg)
         avail = data["available"]
-        self.assertTrue(np.all(avail[:, 0] == 1.0))  # outside always available
-        self.assertTrue(np.all(avail.sum(axis=1) >= 2))  # at least one inside item
+        market_ids = data["market_id"]
+        for t in range(cfg.T):
+            mask = market_ids == t
+            if mask.sum() > 1:
+                rows = avail[mask]
+                self.assertTrue(
+                    np.all(rows == rows[0]),
+                    msg=f"A_t is not common across consumers at t={t}"
+                )
+
+    def test_choice_sets_have_min_avail_brands(self):
+        cfg = _small_cfg(min_avail=2)
+        data, meta = simulate_dynamic_panel(cfg)
+        avail = data["available"]
+        # outside option (col 0) always available; count inside brands
+        inside_avail = avail[:, 1:].sum(axis=1)
+        self.assertTrue(np.all(inside_avail >= cfg.min_avail - 1))
+
+    def test_outside_option_always_available(self):
+        cfg = _small_cfg()
+        data, _ = simulate_dynamic_panel(cfg)
+        self.assertTrue(np.all(data["available"][:, 0] == 1.0))
+
+    def test_inventory_bounded_by_s_max(self):
+        cfg = _small_cfg()
+        data, _ = simulate_dynamic_panel(cfg)
+        self.assertTrue(np.all(data["inventory"] >= 0))
+        self.assertTrue(np.all(data["inventory"] <= cfg.S_max))
+        self.assertTrue(np.all(data["next_inventory"] >= 0))
+        self.assertTrue(np.all(data["next_inventory"] <= cfg.S_max))
+
+    def test_choices_in_valid_range(self):
+        cfg = _small_cfg()
+        data, _ = simulate_dynamic_panel(cfg)
+        self.assertTrue(np.all(data["choice"] >= 0))
+        self.assertTrue(np.all(data["choice"] < cfg.num_items))
+
+    def test_prices_endogenous_positive(self):
+        cfg = _small_cfg()
+        data, _ = simulate_dynamic_panel(cfg)
+        # All inside-good prices must be positive
+        self.assertTrue(np.all(data["price"][:, 1:] > 0))
+        # Outside-option price is 0
+        self.assertTrue(np.all(data["price"][:, 0] == 0.0))
+
+    def test_meta_keys_present(self):
+        cfg = _small_cfg()
+        _, meta = simulate_dynamic_panel(cfg)
+        for key in ["alpha_true", "mu_true", "d_true", "gamma_true",
+                    "xi_true", "price_inside", "avail_true", "delta_true"]:
+            self.assertIn(key, meta)
+
+    def test_gamma_true_sparsity(self):
+        cfg = _small_cfg(sparse_frac=0.5)
+        _, meta = simulate_dynamic_panel(cfg)
+        k_expected = max(1, int(0.5 * cfg.J))
+        nz_per_t = meta["gamma_true"].sum(axis=1)
+        self.assertTrue(np.all(nz_per_t == k_expected))
+
+
+class TestBonus1Model(unittest.TestCase):
+    def setUp(self):
+        np.random.seed(0)
+        tf.random.set_seed(0)
+        try:
+            tf.config.set_visible_devices([], "GPU")
+        except Exception:
+            pass
+        self.cfg = _small_cfg()
+        self.data, self.meta = simulate_dynamic_panel(self.cfg)
+
+    def _batch(self, n=4):
+        idx = np.arange(n)
+        return {k: tf.constant(v[idx]) for k, v in self.data.items()}
+
+    def test_forward_output_shapes(self):
+        model = DynamicContextSparseChoiceModel(self.cfg)
+        batch = self._batch()
+        out = model(
+            {k: batch[k] for k in
+             ["item_ids", "available", "price", "market_id", "inventory"]},
+            training=False,
+        )
+        J1 = self.cfg.num_items
+        self.assertEqual(out["log_probs"].shape, (4, J1))
+        self.assertEqual(out["utilities"].shape, (4, J1))
+
+    def test_log_probs_sum_to_one(self):
+        model = DynamicContextSparseChoiceModel(self.cfg)
+        batch = self._batch()
+        out = model(
+            {k: batch[k] for k in
+             ["item_ids", "available", "price", "market_id", "inventory"]},
+            training=False,
+        )
+        probs = tf.exp(out["log_probs"]).numpy()
+        self.assertTrue(np.allclose(probs.sum(axis=1), 1.0, atol=1e-5))
+
+    def test_all_weights_float32(self):
+        model = DynamicContextSparseChoiceModel(self.cfg)
+        for v in model.weights:
+            self.assertEqual(v.dtype, tf.float32, msg=f"{v.name} is {v.dtype}")
+
+    def test_beta_price_is_trainable(self):
+        model = DynamicContextSparseChoiceModel(self.cfg)
+        self.assertIn(model.beta_price, model.trainable_variables)
 
     def test_smoke_train_runs_and_outputs_finite(self):
-        cfg = DynamicModelConfig(
-            households=40,
-            periods=10,
-            epochs=2,
-            batch_size=128,
-            num_items=6,
-            num_markets=5,
-            availability_prob=0.8,
-            force_cpu=True,
-            compile_train_step=False,
-            seed=123,
-        )
-
-        data, meta = simulate_dynamic_panel(cfg)
-        self.assertIn("gamma_true", meta)
-
-        model = DynamicContextSparseChoiceModel(cfg)
-
-        # For the bonus demo we freeze Halo to force shocks to explain residuals.
+        model = DynamicContextSparseChoiceModel(self.cfg)
         model.halo.trainable = False
+        trainer = DynamicTrainer(model, self.cfg)
+        trainer.fit(self.data)
+        self.assertTrue(np.isfinite(float(model.beta_price.numpy())))
+        self.assertTrue(np.isfinite(float(tf.math.reduce_std(model.mu).numpy())))
+        self.assertTrue(np.isfinite(float(tf.reduce_mean(tf.abs(model.d)).numpy())))
 
-        trainer = DynamicTrainer(model, cfg)
-        trainer.fit(data)
-
-        pi_hat = float(tf.math.sigmoid(model.logit_pi).numpy())
-        self.assertTrue(np.isfinite(pi_hat))
-
-        mu_sd = float(tf.math.reduce_std(model.mu).numpy())
-        self.assertTrue(np.isfinite(mu_sd))
-
-        mean_abs_d = float(tf.reduce_mean(tf.abs(model.d)).numpy())
-        self.assertTrue(np.isfinite(mean_abs_d))
-
-        # Predicted nonzero rate should drop as tau increases.
-        d_hat = model.d.numpy()
-        pred_010 = float((np.abs(d_hat) > 0.10).mean())
-        pred_015 = float((np.abs(d_hat) > 0.15).mean())
-        self.assertLessEqual(pred_015, pred_010)
-
-
-    def test_compiled_train_step_runs_and_outputs_finite(self):
-        """Verify that compile_train_step=True (graph mode with input_signature) works."""
-        cfg = DynamicModelConfig(
-            households=20,
-            periods=5,
-            epochs=2,
-            batch_size=64,
-            num_items=6,
-            num_markets=4,
-            availability_prob=0.8,
-            force_cpu=True,
-            compile_train_step=True,
-            seed=42,
-        )
-
+    def test_compiled_train_step_runs(self):
+        cfg = _small_cfg(compile_train_step=True)
         data, _ = simulate_dynamic_panel(cfg)
         model = DynamicContextSparseChoiceModel(cfg)
         model.halo.trainable = False
-
         trainer = DynamicTrainer(model, cfg)
         trainer.fit(data)
+        self.assertTrue(np.isfinite(float(model.beta_price.numpy())))
 
-        self.assertTrue(np.isfinite(float(tf.math.sigmoid(model.logit_pi).numpy())))
-        self.assertTrue(np.isfinite(float(tf.math.reduce_std(model.mu).numpy())))
+
+class TestBonus1Counterfactual(unittest.TestCase):
+    def setUp(self):
+        np.random.seed(0)
+        tf.random.set_seed(0)
+        try:
+            tf.config.set_visible_devices([], "GPU")
+        except Exception:
+            pass
+
+    def test_counterfactual_returns_expected_keys(self):
+        cfg = _small_cfg()
+        data, _ = simulate_dynamic_panel(cfg)
+        model = DynamicContextSparseChoiceModel(cfg)
+        result = price_promotion_analysis(model, data, cfg, brand_x=1, discount_pct=10.0)
+        for key in ["revenue_baseline", "revenue_promotion",
+                    "revenue_change_abs", "revenue_change_pct",
+                    "share_x_baseline", "share_x_promotion"]:
+            self.assertIn(key, result)
+
+    def test_promotion_increases_brand_share(self):
+        """A price cut should weakly increase the promoted brand's market share."""
+        cfg = _small_cfg(epochs=5)
+        data, _ = simulate_dynamic_panel(cfg)
+        model = DynamicContextSparseChoiceModel(cfg)
+        model.halo.trainable = False
+        trainer = DynamicTrainer(model, cfg)
+        trainer.fit(data)
+        result = price_promotion_analysis(model, data, cfg, brand_x=1, discount_pct=20.0)
+        self.assertGreaterEqual(result["share_x_promotion"], result["share_x_baseline"] - 0.01)
 
 
 if __name__ == "__main__":

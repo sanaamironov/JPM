@@ -12,21 +12,39 @@ from .config import DynamicModelConfig
 
 class DynamicContextSparseChoiceModel(tf.keras.Model):
     """
-    Dynamic discrete choice with:
-      (1) context-dependent utility backbone (DeepHalo),
-      (2) Lu-style unobservables: xi_{t j} = mu_t + d_{t j} (d sparse),
-      (3) storable-goods dynamics via continuation values V(market, inventory).
+    Dynamic discrete choice model for storable goods (revised Bonus 1).
 
-    IMPORTANT: Do not define a method named `loss` on a Keras Model (Keras uses model.loss).
-    We expose `compute_loss(...)` instead.
+    Architecture combines:
+      (1) Halo effect — DeepHalo backbone: utility of brand j depends on the
+          full composition of the available set A_t (context-dependent).
+      (2) Price sensitivity — scalar beta_price * p_jt term.
+      (3) Lu-style sparse shocks — xi_jt = mu_t + d_jt added to inside-good utility.
+      (4) Inventory dynamics — continuation value V(t+1, s') approximated by a
+          neural value head taking (market_id, inventory) as input.
+
+    Estimation uses MAP (NLL + sparse prior + ridge on mu + TD-error on value).
+    Common discount factor delta approximates the consumer-specific delta_i
+    (stated as a modelling assumption; true delta_i are consumer-specific).
+
+    Input batch keys:
+        item_ids    : (B, J+1) int32   — [0, 1, ..., J] for every row
+        available   : (B, J+1) float32 — 0/1 availability mask
+        price       : (B, J+1) float32 — observed prices; price[:, 0] = 0 (outside)
+        inventory   : (B,)     float32 — current inventory s_it (integer-valued in DGP)
+        market_id   : (B,)     int32   — time period index t (0-indexed)
+        choice      : (B,)     int32   — observed choice (only needed for NLL)
     """
 
     def __init__(self, cfg: DynamicModelConfig):
         super().__init__()
         self.cfg = cfg
         if cfg.num_items < 2:
-            raise ValueError("num_items must be >= 2 (outside + >=1 inside item).")
+            raise ValueError("num_items must be >= 2 (outside option + >=1 brand).")
 
+        # Freeze Python-level booleans so cfg reassignment never causes retracing.
+        self._center_d = bool(cfg.center_d_within_market)
+
+        # --- Halo backbone (featureless: brand identity via embedding) ---
         halo_cfg = DeepHaloConfig(
             d_embed=cfg.d_embed,
             n_heads=cfg.n_heads,
@@ -38,141 +56,160 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         )
         self.halo = DeepHalo(halo_cfg)
 
-        # ---------------------------------------------------------------------
-        # Lu-style shocks: inside goods only
-        #
-        # IMPORTANT (Keras 3): use add_weight so these parameters are tracked as
-        # trainable model weights. Plain tf.Variable can fail to be tracked and
-        # will not be updated by the optimizer in some setups.
-        # ---------------------------------------------------------------------
+        # --- Price sensitivity (scalar, shared across brands) ---
+        self.beta_price = self.add_weight(
+            name="beta_price",
+            shape=(),
+            initializer=tf.keras.initializers.Constant(cfg.beta_price_init),
+            trainable=True,
+            dtype=tf.float32,
+        )
+
+        # --- Lu-style sparse shocks: inside goods only ---
         self.mu = self.add_weight(
             name="mu",
-            shape=(cfg.num_markets,),
+            shape=(cfg.num_markets,),   # num_markets = T
             initializer="zeros",
             trainable=True,
             dtype=tf.float32,
         )
-
         self.d = self.add_weight(
             name="d",
-            shape=(cfg.num_markets, cfg.num_items - 1),
+            shape=(cfg.num_markets, cfg.J),   # (T, J) — inside goods
             initializer="zeros",
             trainable=True,
             dtype=tf.float32,
         )
 
-        # Global mixture weight for spike-and-slab-inspired prior on d
+        # Sparsity inclusion probability (logit scale)
         pi0 = float(cfg.a_pi / (cfg.a_pi + cfg.b_pi))
         pi0 = min(max(pi0, 1e-6), 1.0 - 1e-6)
-        logit_pi0 = float(np.log(pi0) - np.log(1.0 - pi0))
-
         self.logit_pi = self.add_weight(
             name="logit_pi",
             shape=(),
-            initializer=tf.keras.initializers.Constant(logit_pi0),
+            initializer=tf.keras.initializers.Constant(
+                float(np.log(pi0) - np.log(1.0 - pi0))
+            ),
             trainable=True,
             dtype=tf.float32,
         )
 
-        # Value baseline V(market, inventory)
-        self.market_embed = tf.keras.layers.Embedding(cfg.num_markets, cfg.d_embed)
+        # --- Value function approximation V(t, s) ---
+        self.market_embed = tf.keras.layers.Embedding(
+            cfg.num_markets, cfg.d_embed, name="market_embed"
+        )
         self.value_head = tf.keras.Sequential(
             [
                 tf.keras.layers.Dense(cfg.d_embed, activation="relu"),
                 tf.keras.layers.Dense(1, activation=None),
-            ]
+            ],
+            name="value_head",
         )
 
-    # -----------------------
-    # Components
-    # -----------------------
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
     def _augmented_utilities(
         self, inputs: Dict[str, tf.Tensor], training: bool
     ) -> tf.Tensor:
-        """u_halo + inside(mu + d)."""
+        """
+        u_aug = u_halo + beta_price * p_jt + 1{j>0} * (mu_t + d_jt)
+
+        Shape: (B, J+1)
+        """
         out = self.halo(inputs, training=training)
-        u_halo = out["utilities"]  # [B, J]
+        u_halo = out["utilities"]   # (B, J+1)
 
-        market_id = tf.cast(inputs["market_id"], tf.int32)  # [B]
-        mu_t = tf.gather(self.mu, market_id)  # [B]
-        d_t = tf.gather(self.d, market_id)  # [B, J-1]
+        market_id = tf.cast(inputs["market_id"], tf.int32)   # (B,)
+        mu_t = tf.gather(self.mu, market_id)                  # (B,)
+        d_t = tf.gather(self.d, market_id)                    # (B, J)
 
-        if self.cfg.center_d_within_market:
+        if self._center_d:
             d_t = d_t - tf.reduce_mean(d_t, axis=1, keepdims=True)
 
-        d_pad = tf.concat([tf.zeros_like(d_t[:, :1]), d_t], axis=1)  # [B, J]
+        # Pad outside option column (index 0) with zero shock
+        d_pad = tf.concat([tf.zeros_like(d_t[:, :1]), d_t], axis=1)  # (B, J+1)
         inside_mask = tf.concat(
             [tf.zeros_like(d_pad[:, :1]), tf.ones_like(d_pad[:, 1:])], axis=1
-        )  # [B,J]
-        return u_halo + inside_mask * mu_t[:, None] + d_pad
+        )  # (B, J+1)
+
+        prices = tf.cast(inputs["price"], tf.float32)   # (B, J+1)
+
+        return u_halo + self.beta_price * prices + inside_mask * mu_t[:, None] + d_pad
 
     def _value_from(
-        self, market_id: tf.Tensor, inventory: tf.Tensor, training: bool
+        self,
+        market_id: tf.Tensor,
+        inventory: tf.Tensor,
+        training: bool,
     ) -> tf.Tensor:
-        inv = tf.cast(inventory, tf.float32)
-        inv_scaled = inv[:, None] / tf.constant(self.cfg.inventory_scale, tf.float32)
-        mid = tf.cast(market_id, tf.int32)
-        m_emb = self.market_embed(mid)
+        """Approximate V(t, s) via the value_head. Shape: (B,)"""
+        inv_scaled = tf.cast(inventory, tf.float32)[:, None] / float(self.cfg.S_max)
+        m_emb = self.market_embed(tf.cast(market_id, tf.int32))   # (B, d_embed)
         x = tf.concat([inv_scaled, m_emb], axis=1)
-        return tf.squeeze(self.value_head(x, training=training), axis=1)  # [B]
+        return tf.squeeze(self.value_head(x, training=training), axis=1)  # (B,)
 
-    def _expected_next_inventory_by_action(self, inventory: tf.Tensor) -> tf.Tensor:
+    def _next_inventory_by_action(self, inventory: tf.Tensor) -> tf.Tensor:
         """
-        Deterministic expected next inventory for each action j:
-            inv_next(j) = max(0, inv + purchase_qty * 1{j>0} - mean_consumption)
-        Returns [B, J]
+        Expected next inventory for each action j (deterministic transition).
+
+        Fixed consumption = 1 per period (Ching 2020):
+            s_consumed = max(0, s - 1)
+            j = 0 (outside): s_next = s_consumed
+            j > 0 (buy 1):   s_next = min(S_max, s_consumed + 1)
+
+        Returns: (B, J+1)
         """
-        inv = tf.cast(inventory, tf.float32)  # [B]
-        B = tf.shape(inv)[0]
-        J = self.cfg.num_items
+        inv = tf.cast(inventory, tf.float32)   # (B,)
+        S_max = float(self.cfg.S_max)
 
-        inside = tf.concat(
-            [tf.zeros([1], tf.float32), tf.ones([J - 1], tf.float32)], axis=0
-        )[None, :]  # [1,J]
-        add = float(self.cfg.purchase_qty) * tf.tile(inside, [B, 1])
-        inv_next = inv[:, None] + add - float(self.cfg.mean_consumption)
-        return tf.maximum(inv_next, 0.0)
+        s_consumed = tf.maximum(inv - 1.0, 0.0)   # (B,)
 
-    # -----------------------
-    # Forward
-    # -----------------------
+        # Outside option column
+        s_next_out = s_consumed[:, None]   # (B, 1)
+
+        # Inside-option columns (all brands share same transition)
+        s_next_in = tf.minimum(
+            tf.expand_dims(s_consumed, 1) + 1.0, S_max
+        )  # (B, 1) broadcast → tile over J brands
+        s_next_in = tf.tile(s_next_in, [1, self.cfg.J])   # (B, J)
+
+        return tf.concat([s_next_out, s_next_in], axis=1)   # (B, J+1)
+
+    # ------------------------------------------------------------------
+    # Forward pass
+    # ------------------------------------------------------------------
+
     def call(
         self, inputs: Dict[str, tf.Tensor], training: bool = False
     ) -> Dict[str, tf.Tensor]:
         """
         Dynamic utility:
-            u_dyn = u0 + discount * V(market, inv_next(j))
+            u_dyn = u_aug + delta * V(t+1, s_next(j))
 
-        where u0 includes DeepHalo + Lu-shocks + an inventory-motive term.
+        where u_aug already contains halo + price + sparse shock terms.
         """
-        u0 = self._augmented_utilities(inputs, training=training)  # [B,J]
+        u_aug = self._augmented_utilities(inputs, training=training)   # (B, J+1)
 
-        inv = tf.cast(inputs["inventory"], tf.float32)  # [B]
-        market_id = tf.cast(inputs["market_id"], tf.int32)  # [B]
+        inv = tf.cast(inputs["inventory"], tf.float32)          # (B,)
+        market_id = tf.cast(inputs["market_id"], tf.int32)      # (B,)
 
-        # Simple inventory motive: encourages buying when inventory is low
-        inv_term = 1.0 / (1.0 + inv)  # [B]
+        # Continuation values
+        inv_next = self._next_inventory_by_action(inv)          # (B, J+1)
         B = tf.shape(inv)[0]
-        inside_mask = tf.concat(
-            [
-                tf.zeros([B, 1], tf.float32),
-                tf.ones([B, self.cfg.num_items - 1], tf.float32),
-            ],
-            axis=1,
-        )
-        u0 = u0 + inside_mask * (0.8 * inv_term[:, None])
+        n_items = self.cfg.num_items
 
-        # Continuation value per action via expected next inventory
-        inv_next = self._expected_next_inventory_by_action(inv)  # [B,J]
-        J = self.cfg.num_items
-        inv_next_flat = tf.reshape(inv_next, [-1])  # [B*J]
-        market_rep = tf.repeat(market_id, repeats=J)  # [B*J]
+        inv_next_flat = tf.reshape(inv_next, [-1])              # (B*(J+1),)
+        next_t = tf.minimum(market_id + 1, self.cfg.T - 1)
+        market_rep = tf.repeat(next_t, repeats=n_items)         # (B*(J+1),)
+
         v_next_flat = self._value_from(market_rep, inv_next_flat, training=training)
-        v_next = tf.reshape(v_next_flat, [B, J])  # [B,J]
+        v_next = tf.reshape(v_next_flat, [B, n_items])          # (B, J+1)
 
-        u_dyn = u0 + float(self.cfg.discount) * v_next
+        u_dyn = u_aug + float(self.cfg.discount) * v_next
 
-        # Availability mask
+        # Availability masking
         avail = tf.cast(inputs["available"], tf.float32)
         u_masked = tf.where(avail > 0.5, u_dyn, tf.cast(-1e9, u_dyn.dtype))
         log_probs = tf.nn.log_softmax(u_masked, axis=1)
@@ -181,9 +218,10 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
 
         return {"utilities": u_dyn, "log_probs": log_probs, "value": v_cur}
 
-    # -----------------------
-    # Loss pieces
-    # -----------------------
+    # ------------------------------------------------------------------
+    # Loss components
+    # ------------------------------------------------------------------
+
     def choice_nll(
         self, inputs: Dict[str, tf.Tensor], training: bool = False
     ) -> tf.Tensor:
@@ -208,7 +246,7 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         return tf.reduce_mean(tf.square(v - target))
 
     def sparse_shock_prior_penalty(self) -> tf.Tensor:
-        """Spike-and-slab-inspired negative log prior (MAP)."""
+        """Spike-and-slab-inspired negative log prior on d (MAP penalty)."""
         d_flat = tf.reshape(self.d, [-1])
         pi = tf.math.sigmoid(self.logit_pi)
         eps = tf.constant(1e-7, dtype=tf.float32)
@@ -216,26 +254,22 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
 
         v0 = tf.constant(self.cfg.v0, dtype=tf.float32)
         v1 = tf.constant(self.cfg.v1, dtype=tf.float32)
-        log2pi = tf.constant(np.log(2.0 * np.pi), dtype=tf.float32)
+        log2pi = tf.constant(float(np.log(2.0 * np.pi)), dtype=tf.float32)
 
         logn0 = -0.5 * (tf.math.log(v0) + log2pi + tf.square(d_flat) / v0)
         logn1 = -0.5 * (tf.math.log(v1) + log2pi + tf.square(d_flat) / v1)
-
         log_mix = tf.reduce_logsumexp(
             tf.stack([tf.math.log1p(-pi) + logn0, tf.math.log(pi) + logn1], axis=0),
             axis=0,
         )
 
-        # Beta prior on pi with logit Jacobian
         a = tf.constant(self.cfg.a_pi, dtype=tf.float32)
-        b = tf.constant(self.cfg.b_pi, dtype=tf.float32)
-        log_beta = tf.math.lgamma(a) + tf.math.lgamma(b) - tf.math.lgamma(a + b)
-        beta_lp = (
-            (a - 1.0) * tf.math.log(pi) + (b - 1.0) * tf.math.log1p(-pi) - log_beta
-        )
+        b_pi = tf.constant(self.cfg.b_pi, dtype=tf.float32)
+        log_beta = tf.math.lgamma(a) + tf.math.lgamma(b_pi) - tf.math.lgamma(a + b_pi)
+        beta_lp = (a - 1.0) * tf.math.log(pi) + (b_pi - 1.0) * tf.math.log1p(-pi) - log_beta
         log_jac = tf.math.log(pi) + tf.math.log1p(-pi)
 
-        mu_ridge = 0.5 * tf.reduce_mean(tf.square(self.mu)) / (self.cfg.mu_sd**2)
+        mu_ridge = 0.5 * tf.reduce_mean(tf.square(self.mu)) / (self.cfg.mu_sd ** 2)
 
         return -tf.reduce_mean(log_mix) - (beta_lp + log_jac) + mu_ridge
 
@@ -250,7 +284,5 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         nll = self.choice_nll(inputs, training=training)
         td = self.td_error_loss(inputs, next_inputs, reward, done, training=training)
         prior = self.sparse_shock_prior_penalty()
-        total = (
-            nll + float(self.cfg.td_weight) * td + float(self.cfg.prior_weight) * prior
-        )
+        total = nll + float(self.cfg.prior_weight) * prior
         return {"total": total, "nll": nll, "td": td, "prior": prior}
