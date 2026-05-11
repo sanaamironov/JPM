@@ -3,24 +3,30 @@ intervals.py — Laplace credible intervals for the dynamic storable-goods model
 
 Method
 ------
-At the MAP estimate, we approximate the posterior by a Gaussian:
+At the MAP estimate we approximate the posterior by a Gaussian:
 
     p(theta | data) ≈ N(theta_hat, H^{-1})
 
-where H = d²L/dtheta² is the Hessian of the MAP objective evaluated at theta_hat.
+where H = d²L_MAP/dtheta² is the Hessian of the full MAP objective
+(NLL + prior terms) evaluated at theta_hat.
 
-For scalars (beta_price, logit_pi) we compute the exact second derivative via
-double GradientTape.  For vectors (mu, d) we use the diagonal of the empirical
-Fisher information — the outer product of per-observation log-likelihood
-gradients — as a computationally tractable approximation.  This is standard
-practice in neural-network posteriors and is explicitly stated as an
-approximation in the report.
+We compute the diagonal of H via automatic differentiation:
+  - Scalars (beta_price, logit_pi): exact d²L/dθ² via double GradientTape.
+  - Vectors (mu, shape T): exact diagonal via tf.jacobian of the gradient.
+  - Matrices (d, shape T×J): exact diagonal of the flattened Hessian via
+    tf.jacobian, reshaped back.
+
+Using the full MAP Hessian (not just the NLL Fisher) is critical:
+  - The prior adds curvature 1/mu_sd² per mu element and 1/v0 or 1/v1 per d
+    element even when the likelihood gradient is near zero.
+  - Fisher-only approximations give SE → ∞ when likelihood gradients vanish
+    at the MAP point, producing degenerate intervals.
 
 All operations are graph-mode compatible.
 """
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Callable, Dict
 
 import numpy as np
 import tensorflow as tf
@@ -30,15 +36,15 @@ from .model import DynamicContextSparseChoiceModel
 
 
 # ---------------------------------------------------------------------------
-# MAP loss (NLL + priors) — used for Hessian computation
+# MAP loss (NLL + priors) — the objective whose Hessian we compute
 # ---------------------------------------------------------------------------
 
-def _map_loss(
+def _build_map_loss_fn(
     model: DynamicContextSparseChoiceModel,
     tensors: Dict[str, tf.Tensor],
     cfg: DynamicModelConfig,
-) -> tf.Tensor:
-    """Full MAP objective evaluated on a tensor dict."""
+) -> Callable[[], tf.Tensor]:
+    """Return a zero-argument callable that evaluates the MAP loss."""
     cur = {
         "item_ids":  tensors["item_ids"],
         "available": tensors["available"],
@@ -54,78 +60,91 @@ def _map_loss(
         "market_id": tensors["next_market_id"],
         "inventory": tensors["next_inventory"],
     }
-    parts = model.compute_loss(
-        inputs=cur,
-        next_inputs=nxt,
-        reward=tensors["reward"],
-        done=tensors["done"],
-        training=False,
-    )
-    return parts["total"]
+
+    def loss_fn() -> tf.Tensor:
+        parts = model.compute_loss(
+            inputs=cur,
+            next_inputs=nxt,
+            reward=tensors["reward"],
+            done=tensors["done"],
+            training=False,
+        )
+        return parts["total"]
+
+    return loss_fn
 
 
 # ---------------------------------------------------------------------------
-# Scalar Hessian (exact second derivative via double GradientTape)
+# Exact Hessian diagonal via automatic differentiation
 # ---------------------------------------------------------------------------
 
-def _scalar_hessian(
-    model: DynamicContextSparseChoiceModel,
-    tensors: Dict[str, tf.Tensor],
-    cfg: DynamicModelConfig,
+def _hessian_diag_scalar(
+    loss_fn: Callable[[], tf.Tensor],
     param: tf.Variable,
 ) -> tf.Tensor:
     """Exact d²L/dθ² for a scalar parameter θ."""
     with tf.GradientTape() as t2:
         with tf.GradientTape() as t1:
-            loss = _map_loss(model, tensors, cfg)
+            loss = loss_fn()
         g = t1.gradient(loss, param)
     h = t2.gradient(g, param)
-    return h
+    return h  # scalar
 
 
-# ---------------------------------------------------------------------------
-# Diagonal Fisher approximation for vector parameters
-# ---------------------------------------------------------------------------
-
-def _diag_fisher(
-    model: DynamicContextSparseChoiceModel,
-    data: Dict[str, np.ndarray],
-    cfg: DynamicModelConfig,
+def _hessian_diag_vector(
+    loss_fn: Callable[[], tf.Tensor],
     param: tf.Variable,
-    batch_size: int = 512,
 ) -> tf.Tensor:
     """
-    Diagonal empirical Fisher: I_ii = mean_n (d log p(y_n|theta) / d theta_i)^2.
+    Exact diagonal of d²L/dθ² for a 1-D vector parameter θ of shape (n,).
 
-    Computed by summing squared per-batch gradients of the NLL.
-    Approximation note: treats observations within each batch as independent
-    and ignores the prior curvature (which is small relative to the likelihood
-    at large N).
+    Uses tf.jacobian to compute the full (n, n) Hessian and extracts the
+    diagonal. Safe for n ≤ ~100.
     """
-    N = len(data["choice"])
-    tensors_all = {k: tf.constant(v) for k, v in data.items()}
-    ds = tf.data.Dataset.from_tensor_slices(tensors_all).batch(batch_size)
+    with tf.GradientTape() as t2:
+        with tf.GradientTape() as t1:
+            loss = loss_fn()
+        g = t1.gradient(loss, param)          # (n,)
+    H = t2.jacobian(g, param)                  # (n, n)
+    return tf.linalg.diag_part(H)              # (n,)
 
-    accum = tf.zeros_like(param)
-    count = 0
 
-    for batch in ds:
-        cur = {
-            "item_ids":  batch["item_ids"],
-            "available": batch["available"],
-            "price":     batch["price"],
-            "market_id": batch["market_id"],
-            "inventory": batch["inventory"],
-            "choice":    batch["choice"],
-        }
-        with tf.GradientTape() as tape:
-            nll = model.choice_nll(cur, training=False)
-        g = tape.gradient(nll, param)
-        if g is not None:
-            accum = accum + tf.square(g) * float(batch["choice"].shape[0])
-            count += int(batch["choice"].shape[0])
+def _hessian_diag_matrix(
+    loss_fn: Callable[[], tf.Tensor],
+    param: tf.Variable,
+) -> tf.Tensor:
+    """
+    Exact diagonal of d²L/dθ² for a 2-D matrix parameter θ of shape (m, n).
 
-    return accum / float(max(count, 1))
+    Flattens to (m*n,), computes the Jacobian of the gradient, extracts the
+    diagonal, and reshapes back to (m, n). Safe for m*n ≤ ~200.
+    """
+    shape = param.shape
+    with tf.GradientTape() as t2:
+        with tf.GradientTape() as t1:
+            loss = loss_fn()
+        g = t1.gradient(loss, param)          # (m, n)
+    g_flat = tf.reshape(g, [-1])               # (m*n,)
+    H_flat = t2.jacobian(g_flat, param)        # (m*n, m, n)
+    n_flat = g_flat.shape[0]
+    H_sq = tf.reshape(H_flat, [n_flat, n_flat])  # (m*n, m*n)
+    diag = tf.linalg.diag_part(H_sq)           # (m*n,)
+    return tf.reshape(diag, shape)             # (m, n)
+
+
+# ---------------------------------------------------------------------------
+# SE and CI from Hessian diagonal
+# ---------------------------------------------------------------------------
+
+def _se_from_hessian_diag(h_diag: np.ndarray, floor: float = 1e-6) -> np.ndarray:
+    """
+    SE = 1 / sqrt(max(|H_ii|, floor)).
+
+    The floor prevents division by zero when a parameter is poorly identified.
+    A floor of 1e-6 gives SE ≤ 1000, which is honest about poor identification
+    rather than producing the infinite SEs of the Fisher approximation.
+    """
+    return 1.0 / np.sqrt(np.maximum(np.abs(h_diag), floor))
 
 
 # ---------------------------------------------------------------------------
@@ -149,41 +168,46 @@ def compute_laplace_intervals(
 
     Returns a dict keyed by parameter name, each containing:
         estimate  : numpy array  (MAP estimate)
-        se        : numpy array  (standard error)
+        se        : numpy array  (standard error = 1/sqrt(|H_ii|))
         ci_lower  : numpy array  (lower credible bound)
         ci_upper  : numpy array  (upper credible bound)
     """
-    z = float(tf.math.erfinv(tf.constant(confidence, tf.float32)).numpy() * np.sqrt(2))
+    z = float(
+        tf.math.erfinv(tf.constant(confidence, tf.float32)).numpy() * np.sqrt(2)
+    )
 
+    # Subsample data for Hessian computation — full data is expensive but correct.
+    # Use all data (N ≤ ~3000 is fine for this model size).
     tensors = {k: tf.constant(v) for k, v in data.items()}
+    loss_fn = _build_map_loss_fn(model, tensors, cfg)
 
     results: Dict[str, Dict[str, np.ndarray]] = {}
 
-    # --- beta_price (scalar, exact Hessian) ---
-    h_beta = _scalar_hessian(model, tensors, cfg, model.beta_price)
-    se_beta = float(1.0 / (tf.sqrt(tf.abs(h_beta) + 1e-8)).numpy())
+    # --- beta_price (scalar) ---
+    h_beta = _hessian_diag_scalar(loss_fn, model.beta_price).numpy()
+    se_beta = _se_from_hessian_diag(np.array(h_beta))
     est_beta = float(model.beta_price.numpy())
     results["beta_price"] = {
         "estimate": np.array(est_beta),
-        "se":       np.array(se_beta),
-        "ci_lower": np.array(est_beta - z * se_beta),
-        "ci_upper": np.array(est_beta + z * se_beta),
+        "se":       se_beta,
+        "ci_lower": np.array(est_beta - z * float(se_beta)),
+        "ci_upper": np.array(est_beta + z * float(se_beta)),
     }
 
-    # --- logit_pi (scalar, exact Hessian) ---
-    h_pi = _scalar_hessian(model, tensors, cfg, model.logit_pi)
-    se_pi = float(1.0 / (tf.sqrt(tf.abs(h_pi) + 1e-8)).numpy())
+    # --- logit_pi (scalar) ---
+    h_pi = _hessian_diag_scalar(loss_fn, model.logit_pi).numpy()
+    se_pi = _se_from_hessian_diag(np.array(h_pi))
     est_pi = float(model.logit_pi.numpy())
     results["logit_pi"] = {
         "estimate": np.array(est_pi),
-        "se":       np.array(se_pi),
-        "ci_lower": np.array(est_pi - z * se_pi),
-        "ci_upper": np.array(est_pi + z * se_pi),
+        "se":       se_pi,
+        "ci_lower": np.array(est_pi - z * float(se_pi)),
+        "ci_upper": np.array(est_pi + z * float(se_pi)),
     }
 
-    # --- mu (vector, diagonal Fisher) ---
-    f_mu = _diag_fisher(model, data, cfg, model.mu).numpy()
-    se_mu = 1.0 / np.sqrt(np.abs(f_mu) + 1e-8)
+    # --- mu (T-vector) ---
+    h_mu = _hessian_diag_vector(loss_fn, model.mu).numpy()   # (T,)
+    se_mu = _se_from_hessian_diag(h_mu)
     est_mu = model.mu.numpy()
     results["mu"] = {
         "estimate": est_mu,
@@ -192,9 +216,9 @@ def compute_laplace_intervals(
         "ci_upper": est_mu + z * se_mu,
     }
 
-    # --- d (matrix, diagonal Fisher — flattened then reshaped) ---
-    f_d = _diag_fisher(model, data, cfg, model.d).numpy()
-    se_d = 1.0 / np.sqrt(np.abs(f_d) + 1e-8)
+    # --- d (T×J matrix) ---
+    h_d = _hessian_diag_matrix(loss_fn, model.d).numpy()     # (T, J)
+    se_d = _se_from_hessian_diag(h_d)
     est_d = model.d.numpy()
     results["d"] = {
         "estimate": est_d,
@@ -222,14 +246,19 @@ def print_interval_summary(
         true_str = f"{true_val:8.3f}" if true_val is not None else "       —"
         print(f"{name:<18} {true_str} {est:10.3f} {se:8.3f} [{lo:8.3f}, {hi:8.3f}]")
 
-    true_beta = float(meta["true_beta_price"]) if meta and "true_beta_price" in meta else None
+    true_beta = float(meta.get("true_beta_price", float("nan"))) if meta else None
     _row("beta_price", true_beta, results["beta_price"])
 
-    pi_hat = float(tf.math.sigmoid(results["logit_pi"]["estimate"]).numpy())
-    _row("pi (sparsity)", None, {"estimate": np.array(pi_hat),
-                                  "se": results["logit_pi"]["se"],
-                                  "ci_lower": np.array(pi_hat - 1.96 * float(results["logit_pi"]["se"])),
-                                  "ci_upper": np.array(pi_hat + 1.96 * float(results["logit_pi"]["se"]))})
+    pi_hat = float(tf.math.sigmoid(
+        tf.constant(float(results["logit_pi"]["estimate"]))
+    ).numpy())
+    pi_se = float(results["logit_pi"]["se"])
+    _row("pi (sparsity)", None, {
+        "estimate": np.array(pi_hat),
+        "se":       np.array(pi_se),
+        "ci_lower": np.array(pi_hat - 1.96 * pi_se),
+        "ci_upper": np.array(pi_hat + 1.96 * pi_se),
+    })
 
     mu_true = meta.get("mu_true") if meta else None
     for t in range(len(results["mu"]["estimate"])):
@@ -237,4 +266,4 @@ def print_interval_summary(
         _row(f"mu[{t}]", tv, {k: results["mu"][k][t:t+1] for k in results["mu"]})
 
     print("-" * 72)
-    print(f"(mu and d intervals use diagonal Fisher approximation)")
+    print("(Intervals use exact MAP Hessian diagonal via automatic differentiation)")

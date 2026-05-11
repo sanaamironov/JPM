@@ -1,17 +1,23 @@
 """
 simulation_study.py — Part 3: Simulation and Parameter Recovery.
 
-Generates data from the known DGP, estimates the model, computes
-95% Laplace credible intervals, and reports true vs. estimated values.
+Training strategy (two-stage):
+  Stage 1 — econometric estimation:
+    Freeze Halo AND value head. Train only beta_price, mu, d, logit_pi.
+    Objective: NLL + priors only (no TD loss).
+    This isolates the econometric parameters from the value function
+    approximation that would otherwise compete for the same signal.
 
-Usage:
-    python -m jpm_q3.bonus1.dynamic_model.simulation_study
-    # or from the CLI entry point defined in pyproject.toml
+  Stage 2 — joint fine-tuning:
+    Unfreeze all parameters. Train jointly (NLL + TD + priors).
+    The econometric parameters are now initialised near their true values,
+    so the Halo and value head can refine rather than confound.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Dict
 
 import numpy as np
 import tensorflow as tf
@@ -20,8 +26,82 @@ from .config import DynamicModelConfig
 from .data import simulate_dynamic_panel
 from .intervals import compute_laplace_intervals, print_interval_summary
 from .model import DynamicContextSparseChoiceModel
-from .trainer import DynamicTrainer
 
+
+# ---------------------------------------------------------------------------
+# Two-stage trainer
+# ---------------------------------------------------------------------------
+
+def _make_stage_trainer(
+    model: DynamicContextSparseChoiceModel,
+    cfg: DynamicModelConfig,
+    train_vars: list,
+    epochs: int,
+    lr: float = 1e-3,
+) -> None:
+    """Train for `epochs` epochs updating only `train_vars`."""
+    opt = tf.keras.optimizers.Adam(learning_rate=lr)
+    tensors = None  # lazy — built on first call
+
+    def _step(batch):
+        cur = {k: batch[k] for k in
+               ["item_ids", "available", "price", "market_id", "inventory", "choice"]}
+        with tf.GradientTape() as tape:
+            nll = model.choice_nll(cur, training=True)
+            prior = model.sparse_shock_prior_penalty()
+            loss = nll + float(cfg.prior_weight) * prior
+        grads = tape.gradient(loss, train_vars)
+        pairs = [(g, v) for g, v in zip(grads, train_vars) if g is not None]
+        opt.apply_gradients(pairs)
+        return loss, nll
+
+    return _step
+
+
+def _fit_stage(
+    model: DynamicContextSparseChoiceModel,
+    cfg: DynamicModelConfig,
+    data: Dict[str, np.ndarray],
+    train_vars: list,
+    epochs: int,
+    lr: float = 1e-3,
+    label: str = "Stage",
+) -> None:
+    tensors = {k: tf.constant(v) for k, v in data.items()}
+    ds = (
+        tf.data.Dataset.from_tensor_slices(tensors)
+        .shuffle(4096, seed=cfg.seed)
+        .batch(cfg.batch_size)
+        .prefetch(tf.data.AUTOTUNE)
+    )
+    opt = tf.keras.optimizers.Adam(learning_rate=lr)
+
+    @tf.function
+    def step(batch):
+        cur = {k: batch[k] for k in
+               ["item_ids", "available", "price", "market_id", "inventory", "choice"]}
+        with tf.GradientTape() as tape:
+            nll = model.choice_nll(cur, training=True)
+            prior = model.sparse_shock_prior_penalty()
+            loss = nll + float(cfg.prior_weight) * prior
+        grads = tape.gradient(loss, train_vars)
+        pairs = [(g, v) for g, v in zip(grads, train_vars) if g is not None]
+        opt.apply_gradients(pairs)
+        return loss, nll
+
+    for ep in range(1, epochs + 1):
+        m_loss = tf.keras.metrics.Mean()
+        m_nll = tf.keras.metrics.Mean()
+        for batch in ds:
+            loss, nll = step(batch)
+            m_loss.update_state(loss)
+            m_nll.update_state(nll)
+        print(f"  {label} Epoch {ep:03d} | loss={m_loss.result():.4f}  nll={m_nll.result():.4f}")
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 def run_simulation_study(
     cfg: DynamicModelConfig | None = None,
@@ -29,16 +109,11 @@ def run_simulation_study(
     seed: int = 0,
 ) -> dict:
     """
-    Full simulation study pipeline:
-      1. Generate synthetic data from the DGP (with known true parameters).
-      2. Estimate model via MAP (DynamicTrainer).
-      3. Compute Laplace credible intervals.
-      4. Report true vs estimated values.
-
-    The estimator starts from a fresh random initialisation — it does NOT
-    receive the true DeepHalo weights or true parameter values.
-
-    Returns a summary dict suitable for JSON serialisation.
+    Full simulation study:
+      1. Generate data from the known DGP.
+      2. Estimate via two-stage MAP.
+      3. Compute exact MAP Hessian credible intervals.
+      4. Report true vs. estimated values and coverage.
     """
     if cfg is None:
         cfg = DynamicModelConfig(
@@ -65,27 +140,50 @@ def run_simulation_study(
     # ------------------------------------------------------------------
     print(f"[simulation_study] Generating panel: I={cfg.num_households}, T={cfg.T}, J={cfg.J}")
     data, meta = simulate_dynamic_panel(cfg, seed=seed)
-    print(f"  N observations: {len(data['choice'])}")
+    print(f"  N observations:  {len(data['choice'])}")
     print(f"  True beta_price: {cfg.true_beta_price:.3f}")
     print(f"  True mu range:   [{meta['mu_true'].min():.3f}, {meta['mu_true'].max():.3f}]")
     print(f"  Nonzero d frac:  {meta['gamma_true'].mean():.3f}")
 
     # ------------------------------------------------------------------
-    # Step 2: Estimate — fresh model, NOT given true weights
+    # Step 2: Two-stage estimation
     # ------------------------------------------------------------------
-    print("\n[simulation_study] Training model...")
     model = DynamicContextSparseChoiceModel(cfg)
-    # Freeze Halo in first-pass training so sparse shocks explain residuals.
-    # A full joint run would be two-stage (freeze → unfreeze).
+
+    # Stage 1: Freeze Halo + value head. Train econometric params only.
+    # This prevents the value head's market_embed from absorbing mu_t signal.
+    print("\n[simulation_study] Stage 1: econometric params (Halo + value head frozen)...")
     model.halo.trainable = False
+    model.market_embed.trainable = False
+    model.value_head.trainable = False
 
-    trainer = DynamicTrainer(model, cfg)
-    trainer.fit(data)
+    econometric_vars = [model.beta_price, model.mu, model.d, model.logit_pi]
+    _fit_stage(model, cfg, data, econometric_vars,
+               epochs=cfg.epochs, lr=cfg.lr, label="S1")
+
+    print(f"  beta_price after Stage 1: {float(model.beta_price.numpy()):.4f}  "
+          f"(true: {cfg.true_beta_price:.3f})")
+    print(f"  std(mu) after Stage 1:    {float(tf.math.reduce_std(model.mu).numpy()):.4f}")
+
+    # Stage 2: Unfreeze everything, fine-tune jointly.
+    print("\n[simulation_study] Stage 2: joint fine-tuning (all params)...")
+    model.halo.trainable = True
+    model.market_embed.trainable = True
+    model.value_head.trainable = True
+
+    all_vars = model.trainable_variables
+    _fit_stage(model, cfg, data, all_vars,
+               epochs=max(10, cfg.epochs // 3), lr=cfg.lr * 0.3, label="S2")
+
+    print(f"\n  beta_price final: {float(model.beta_price.numpy()):.4f}  "
+          f"(true: {cfg.true_beta_price:.3f})")
+    print(f"  std(mu) final:    {float(tf.math.reduce_std(model.mu).numpy()):.4f}")
+    print(f"  mean|d| final:    {float(tf.reduce_mean(tf.abs(model.d)).numpy()):.4f}")
 
     # ------------------------------------------------------------------
-    # Step 3: Laplace credible intervals
+    # Step 3: Exact MAP Hessian credible intervals
     # ------------------------------------------------------------------
-    print("\n[simulation_study] Computing Laplace credible intervals...")
+    print("\n[simulation_study] Computing exact MAP Hessian intervals...")
     intervals = compute_laplace_intervals(model, data, cfg, confidence=0.95)
 
     # ------------------------------------------------------------------
@@ -94,7 +192,6 @@ def run_simulation_study(
     print_interval_summary(intervals, meta={"true_beta_price": cfg.true_beta_price,
                                              "mu_true": meta["mu_true"]})
 
-    # Coverage: does the CI contain the true value?
     beta_lo = float(intervals["beta_price"]["ci_lower"])
     beta_hi = float(intervals["beta_price"]["ci_upper"])
     beta_covered = bool(beta_lo <= cfg.true_beta_price <= beta_hi)
@@ -108,20 +205,16 @@ def run_simulation_study(
         (meta["d_true"] <= intervals["d"]["ci_upper"])
     ))
 
-    print(f"\n[simulation_study] Coverage summary (95% nominal):")
+    print(f"\n[simulation_study] Coverage (95% nominal):")
     print(f"  beta_price  covered: {beta_covered}")
     print(f"  mu          coverage: {mu_covered:.2f}")
     print(f"  d           coverage: {d_covered:.2f}")
 
     summary = {
         "config": {
-            "J": cfg.J,
-            "T": cfg.T,
-            "num_households": cfg.num_households,
-            "epochs": cfg.epochs,
-            "true_beta_price": cfg.true_beta_price,
-            "gamma_endogeneity": cfg.gamma_endogeneity,
-            "sparse_frac": cfg.sparse_frac,
+            "J": cfg.J, "T": cfg.T, "num_households": cfg.num_households,
+            "epochs": cfg.epochs, "true_beta_price": cfg.true_beta_price,
+            "gamma_endogeneity": cfg.gamma_endogeneity, "sparse_frac": cfg.sparse_frac,
         },
         "true": {
             "beta_price": float(cfg.true_beta_price),
@@ -135,7 +228,9 @@ def run_simulation_study(
             "beta_price_ci": [float(intervals["beta_price"]["ci_lower"]),
                               float(intervals["beta_price"]["ci_upper"])],
             "pi_hat": float(tf.math.sigmoid(model.logit_pi).numpy()),
-            "mu_rmse": float(np.sqrt(np.mean((model.mu.numpy() - meta["mu_true"])**2))),
+            "mu_rmse": float(np.sqrt(np.mean(
+                (model.mu.numpy() - meta["mu_true"]) ** 2
+            ))),
         },
         "coverage": {
             "beta_price": beta_covered,

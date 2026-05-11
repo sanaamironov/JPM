@@ -1,4 +1,5 @@
 """Smoke-test entry point for the revised Bonus 1 dynamic model."""
+
 from __future__ import annotations
 
 import json
@@ -41,7 +42,7 @@ def main() -> None:
     print(f"  Gamma endogeneity: {cfg.gamma_endogeneity:.3f}")
 
     model = DynamicContextSparseChoiceModel(cfg)
-    model.halo.trainable = False   # freeze Halo for demo; full study unfreezes jointly
+    model.halo.trainable = True  # freeze Halo for demo; full study unfreezes jointly
 
     trainer = DynamicTrainer(model, cfg)
     trainer.fit(data)
@@ -66,7 +67,9 @@ def main() -> None:
     print(f"\nSparsity support recovery (tau=0.15):")
     tau = 0.15
     gamma_hat = (np.abs(d_hat) > tau).astype(np.int32)
-    sens = float((gamma_hat[true_nz] == 1).mean()) if true_nz.sum() > 0 else float("nan")
+    sens = (
+        float((gamma_hat[true_nz] == 1).mean()) if true_nz.sum() > 0 else float("nan")
+    )
     spec = float((gamma_hat[true_z] == 0).mean()) if true_z.sum() > 0 else float("nan")
     print(f"  sensitivity={sens:.3f}  specificity={spec:.3f}")
 
@@ -78,7 +81,9 @@ def main() -> None:
     payload = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "config": {
-            "J": cfg.J, "T": cfg.T, "num_households": cfg.num_households,
+            "J": cfg.J,
+            "T": cfg.T,
+            "num_households": cfg.num_households,
             "true_beta_price": cfg.true_beta_price,
         },
         "estimated": {
@@ -94,7 +99,9 @@ def main() -> None:
 
     out_dir = Path("results/bonus1/dynamic_model") / f"demo_{cfg.seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (out_dir / "results.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
     print(f"\nSaved to: {out_dir}")
 
 

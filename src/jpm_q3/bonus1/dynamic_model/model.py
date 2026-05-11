@@ -211,7 +211,7 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
 
         # Availability masking
         avail = tf.cast(inputs["available"], tf.float32)
-        u_masked = tf.where(avail > 0.5, u_dyn, tf.cast(-1e9, u_dyn.dtype))
+        u_masked = tf.where(avail > 0.5, u_dyn, tf.constant(float('-inf'), dtype=u_dyn.dtype))
         log_probs = tf.nn.log_softmax(u_masked, axis=1)
 
         v_cur = self._value_from(market_id, inv, training=training)

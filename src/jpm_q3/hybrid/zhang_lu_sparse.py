@@ -152,7 +152,7 @@ class ZhangSparseDeepHalo(tf.keras.Model):
 
         # availability mask
         avail = tf.cast(inputs["available"], tf.float32)
-        u_masked = tf.where(avail > 0.5, u_aug, tf.cast(-1e9, u_aug.dtype))
+        u_masked = tf.where(avail > 0.5, u_aug, tf.constant(float('-inf'), dtype=u_aug.dtype))
         log_probs = tf.nn.log_softmax(u_masked, axis=1)
 
         return {"utilities": u_aug, "log_probs": log_probs}

@@ -38,8 +38,9 @@ def masked_softmax(logits: tf.Tensor,
     logits = tf.cast(logits, tf.float32)
     mask = tf.cast(mask, tf.float32)
 
-    # Put -inf on masked-out items so softmax gives exactly 0 there.
-    neg_inf = tf.constant(-1e9, dtype=logits.dtype)
+    # Use true -inf so masked items get exactly 0 probability (not a small epsilon).
+    # Bugs that put finite logits on unavailable items will surface as NaN immediately.
+    neg_inf = tf.constant(float('-inf'), dtype=logits.dtype)
     masked_logits = tf.where(mask > 0, logits, neg_inf)
 
     return tf.nn.softmax(masked_logits, axis=axis)
@@ -58,7 +59,7 @@ def masked_log_softmax(logits: tf.Tensor,
     """
     logits = tf.cast(logits, tf.float32)
     mask = tf.cast(mask, tf.float32)
-    neg_inf = tf.constant(-1e9, dtype=logits.dtype)
+    neg_inf = tf.constant(float('-inf'), dtype=logits.dtype)
     masked_logits = tf.where(mask > 0, logits, neg_inf)
     return tf.nn.log_softmax(masked_logits, axis=axis)
 

@@ -261,7 +261,7 @@ class AuthorsFeaturelessNetTF(tf.keras.layers.Layer):
                 z = b(z, training=training)
 
         logits = self.out_lin(z)  # (B, J)
-        neg_inf = tf.constant(-1e9, dtype=logits.dtype)
+        neg_inf = tf.constant(float('-inf'), dtype=logits.dtype)
         logits = tf.where(mask, logits, neg_inf)
         log_probs = tf.nn.log_softmax(logits, axis=-1)
         return {"logits": logits, "log_probs": log_probs}
@@ -386,7 +386,7 @@ class AuthorsFeatureBasedNetTF(tf.keras.layers.Layer):
             Z = tf.reduce_sum(phi * Z_bar, axis=2) / float(self.cfg.n_heads) + Z
 
         logits = tf.squeeze(self.final_linear(Z, training=training), axis=-1)  # (B, J)
-        neg_inf = tf.constant(-1e9, dtype=logits.dtype)
+        neg_inf = tf.constant(float('-inf'), dtype=logits.dtype)
         logits = tf.where(tf.cast(avail > 0.5, tf.bool), logits, neg_inf)
         log_probs = tf.nn.log_softmax(logits, axis=1)
         return {"logits": logits, "log_probs": log_probs}

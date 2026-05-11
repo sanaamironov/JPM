@@ -1,0 +1,32 @@
+{
+  "config": {
+    "J": 5,
+    "T": 20,
+    "num_households": 150,
+    "epochs": 30,
+    "true_beta_price": -1.5,
+    "gamma_endogeneity": 0.5,
+    "sparse_frac": 0.3
+  },
+  "true": {
+    "beta_price": -1.5,
+    "mu_mean": -0.1019565612077713,
+    "mu_std": 0.9345499277114868,
+    "gamma_true_mean": 0.2
+  },
+  "estimated": {
+    "beta_price": -0.2842564880847931,
+    "beta_price_se": 1.9060127526368802,
+    "beta_price_ci": [
+      -4.019973509494187,
+      3.4514605333246005
+    ],
+    "pi_hat": 0.09459371864795685,
+    "mu_rmse": 0.8548494577407837
+  },
+  "coverage": {
+    "beta_price": true,
+    "mu": 1.0,
+    "d": 1.0
+  }
+}
