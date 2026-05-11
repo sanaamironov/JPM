@@ -82,5 +82,31 @@ class TestBonus1DynamicSmoke(unittest.TestCase):
         self.assertLessEqual(pred_015, pred_010)
 
 
+    def test_compiled_train_step_runs_and_outputs_finite(self):
+        """Verify that compile_train_step=True (graph mode with input_signature) works."""
+        cfg = DynamicModelConfig(
+            households=20,
+            periods=5,
+            epochs=2,
+            batch_size=64,
+            num_items=6,
+            num_markets=4,
+            availability_prob=0.8,
+            force_cpu=True,
+            compile_train_step=True,
+            seed=42,
+        )
+
+        data, _ = simulate_dynamic_panel(cfg)
+        model = DynamicContextSparseChoiceModel(cfg)
+        model.halo.trainable = False
+
+        trainer = DynamicTrainer(model, cfg)
+        trainer.fit(data)
+
+        self.assertTrue(np.isfinite(float(tf.math.sigmoid(model.logit_pi).numpy())))
+        self.assertTrue(np.isfinite(float(tf.math.reduce_std(model.mu).numpy())))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,8 +16,23 @@ class DynamicTrainer:
         self.model = model
         self.cfg = cfg
         self.opt = tf.keras.optimizers.Adam(learning_rate=float(cfg.lr))
+
+        J = cfg.num_items
+        _sig = {
+            "item_ids":       tf.TensorSpec([None, J], tf.int32),
+            "available":      tf.TensorSpec([None, J], tf.float32),
+            "market_id":      tf.TensorSpec([None],    tf.int32),
+            "inventory":      tf.TensorSpec([None],    tf.float32),
+            "choice":         tf.TensorSpec([None],    tf.int32),
+            "reward":         tf.TensorSpec([None],    tf.float32),
+            "done":           tf.TensorSpec([None],    tf.float32),
+            "next_item_ids":  tf.TensorSpec([None, J], tf.int32),
+            "next_available": tf.TensorSpec([None, J], tf.float32),
+            "next_market_id": tf.TensorSpec([None],    tf.int32),
+            "next_inventory": tf.TensorSpec([None],    tf.float32),
+        }
         self._train_step_fn = (
-            tf.function(self._train_step_eager)
+            tf.function(self._train_step_eager, input_signature=[_sig])
             if cfg.compile_train_step
             else self._train_step_eager
         )
@@ -66,6 +81,7 @@ class DynamicTrainer:
             tf.data.Dataset.from_tensor_slices(tensors)
             .shuffle(4096, seed=int(self.cfg.seed))
             .batch(int(self.cfg.batch_size))
+            .prefetch(tf.data.AUTOTUNE)
         )
 
         for ep in range(1, int(self.cfg.epochs) + 1):

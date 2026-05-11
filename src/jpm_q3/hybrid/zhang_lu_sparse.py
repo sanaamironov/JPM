@@ -100,6 +100,8 @@ class ZhangSparseDeepHalo(tf.keras.Model):
         self.cfg = cfg
         self.T = int(T)
         self.J_inside = int(J_inside)
+        # Freeze at construction so reassigning self.cfg later doesn't retrace call().
+        self._center_d = bool(cfg.center_d_within_market)
 
         halo_cfg = DeepHaloConfig(
             d_embed=cfg.d_embed,
@@ -132,7 +134,7 @@ class ZhangSparseDeepHalo(tf.keras.Model):
         d_t = tf.gather(self.d, market_id)  # (B, J_inside)
 
         # Identification constraint: within-market mean(d_t) = 0
-        if self.cfg.center_d_within_market:
+        if self._center_d:
             d_t = d_t - tf.reduce_mean(d_t, axis=1, keepdims=True)
 
         # pad outside option (index 0)
@@ -184,16 +186,26 @@ class AblationTrainer:
         self.opt = tf.keras.optimizers.Adam(learning_rate=lr)
         self.train_vars = train_vars
 
-    @tf.function
-    def train_step(self, batch: Dict[str, tf.Tensor]) -> tf.Tensor:
+        n_items = model.J_inside + 1
+        _sig = {
+            "item_ids":   tf.TensorSpec([None, n_items], tf.int32),
+            "available":  tf.TensorSpec([None, n_items], tf.float32),
+            "choice":     tf.TensorSpec([None],           tf.int32),
+            "market_id":  tf.TensorSpec([None],           tf.int32),
+        }
+        self._train_fn = tf.function(self._train_step_eager, input_signature=[_sig])
+
+    def _train_step_eager(self, batch: Dict[str, tf.Tensor]) -> tf.Tensor:
         with tf.GradientTape() as tape:
             loss = self.model.map_objective(batch, training=True)
         grads = tape.gradient(loss, self.train_vars)
-
-        # Filter None grads (can happen if a var is disconnected in an ablation)
+        # Filter None grads (can happen when a var is disconnected in an ablation stage)
         pairs = [(g, v) for g, v in zip(grads, self.train_vars) if g is not None]
         self.opt.apply_gradients(pairs)
         return loss
+
+    def train_step(self, batch: Dict[str, tf.Tensor]) -> tf.Tensor:
+        return self._train_fn(batch)
 
     def fit(
         self,
@@ -202,18 +214,19 @@ class AblationTrainer:
         epochs: int,
         verbose: int = 1,
     ):
-        N = int(len(data["choice"]))
-        idx = np.arange(N)
-
+        tensors = {k: tf.constant(v) for k, v in data.items()}
+        ds = (
+            tf.data.Dataset.from_tensor_slices(tensors)
+            .shuffle(buffer_size=int(len(data["choice"])), reshuffle_each_iteration=True)
+            .batch(batch_size)
+            .prefetch(tf.data.AUTOTUNE)
+        )
         for ep in range(1, epochs + 1):
-            np.random.shuffle(idx)
-            losses = []
-            for s in range(0, N, batch_size):
-                b = idx[s : s + batch_size]
-                batch = {k: tf.convert_to_tensor(v[b]) for k, v in data.items()}
-                losses.append(float(self.train_step(batch).numpy()))
+            m = tf.keras.metrics.Mean()
+            for batch in ds:
+                m.update_state(self._train_fn(batch))
             if verbose:
-                print(f"Epoch {ep:03d} | MAP loss {np.mean(losses):.4f}")
+                print(f"Epoch {ep:03d} | MAP loss {m.result():.4f}")
 
 
 # -----------------------------------------------------------------------------

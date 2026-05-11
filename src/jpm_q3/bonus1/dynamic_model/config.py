@@ -41,7 +41,7 @@ class DynamicModelConfig:
     batch_size: int = 256
     epochs: int = 10
     seed: int = 123
-    compile_train_step: bool = False
+    compile_train_step: bool = True
     force_cpu: bool = True
 
     # Synthetic panel generation
