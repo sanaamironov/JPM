@@ -1,30 +1,38 @@
+import unittest
+
 import tensorflow as tf
 
 from choice_learn_ext.models.deep_context.deep_halo_core import DeepContextChoiceModel
-from choice_learn_ext.models.deep_context.trainer import Trainer
+from choice_learn_ext.models.deep_context.training import make_dataset
 
 
-def test_overfit_tiny_dataset():
-    num_items = 3
-    model = DeepContextChoiceModel(num_items=num_items)
-    trainer = Trainer(model, lr=5e-2)
+class TestOverfitTiny(unittest.TestCase):
+    def test_overfit_single_choice_pattern(self):
+        """Model should strongly favour item 1 after training on a dataset
+        where item 1 is always chosen from a 3-item set."""
+        model = DeepContextChoiceModel(num_items=3)
+        model.compile(optimizer=tf.keras.optimizers.Adam(5e-2))
 
-    # Single choice set {0,1,2}, always choose item 1
-    N = 40
-    available = tf.constant([[1, 1, 1]] * N, dtype=tf.float32)
-    item_ids = tf.constant([[0, 1, 2]] * N, dtype=tf.int32)
-    choices = tf.constant([1] * N, dtype=tf.int32)
+        N = 40
+        available = tf.constant([[1, 1, 1]] * N, dtype=tf.float32)
+        item_ids = tf.constant([[0, 1, 2]] * N, dtype=tf.int32)
+        choices = tf.constant([1] * N, dtype=tf.int32)
 
-    batch = {"available": available, "item_ids": item_ids, "choice": choices}
+        # batch_size == N → one gradient step per epoch; 150 epochs ≈ 150 steps
+        ds = make_dataset(
+            {"available": available, "item_ids": item_ids, "choice": choices},
+            batch_size=N,
+            shuffle=False,
+        )
+        history = model.fit(ds, epochs=150, verbose=0)
 
-    # Train a bit
-    for _ in range(150):
-        loss = trainer.train_step(batch)
+        out = model({"available": available, "item_ids": item_ids}, training=False)
+        probs = tf.exp(out["log_probs"]).numpy()
+        mean_p1 = probs[:, 1].mean()
 
-    out = model(batch, training=False)["log_probs"]
-    probs = tf.exp(out).numpy()
-    mean_p1 = probs[:, 1].mean()
+        self.assertGreater(mean_p1, 0.9)
+        self.assertLess(history.history["loss"][-1], 0.5)
 
-    # We don't need perfection, just clear learning
-    assert mean_p1 > 0.9
-    assert float(loss.numpy()) < 0.5
+
+if __name__ == "__main__":
+    unittest.main()

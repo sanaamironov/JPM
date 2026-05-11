@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import json
-from typing import Mapping, Optional, Any
+from typing import Any, Mapping, Optional
 
 import numpy as np
 import pandas as pd
+import tensorflow as tf
+
 from .data_io import dataframe_to_arrays, validate_arrays
 from .deep_halo_core import DeepContextChoiceModel
-from .trainer import Trainer
+from .training import make_dataset, predict_proba
 
 
 class DeepHaloChoiceModel:
-    """Public-facing wrapper that follows a choice-learn style estimator API.
+    """Public-facing estimator that follows a choice-learn style API.
 
-    Design notes (review feedback)
-    ------------------------------
-    - Array/tensor inputs are the primary interface.
-    - Pandas DataFrames are supported via `fit_df`/`predict_proba_df` with a configurable column mapping.
-    - This avoids brittle dependencies on exact column names and improves testability.
+    Training is delegated to Keras via model.compile() + model.fit().
+    Array/tensor inputs are the primary interface; DataFrames are
+    supported through fit_df/predict_proba_df with a configurable column map.
     """
 
     def __init__(
@@ -44,10 +44,8 @@ class DeepHaloChoiceModel:
         self.seed = seed
         self.width_multiplier = int(width_multiplier)
 
-        # Lazy-build: in feature-based mode we don't know d_x until we see X in fit().
+        # Feature-based models are built lazily in fit() once d_x is known.
         self.model: Optional[DeepContextChoiceModel] = None
-        self.trainer: Optional[Trainer] = None
-
         if self.featureless:
             self.model = DeepContextChoiceModel(
                 num_items=self.num_items,
@@ -55,7 +53,6 @@ class DeepHaloChoiceModel:
                 n_blocks=self.n_blocks,
                 featureless=True,
             )
-            self.trainer = Trainer(self.model, lr=self.lr)
 
     # ------------------------------------------------------------------
     # Primary API (arrays / tensors)
@@ -71,12 +68,10 @@ class DeepHaloChoiceModel:
         shuffle: bool = True,
         seed: Optional[int] = None,
     ) -> "DeepHaloChoiceModel":
-        # Fail fast with a clear message (needed for tests + usability)
         if not self.featureless and X is None:
             raise ValueError("X must be provided when featureless=False.")
 
-        # Lazy-build for feature-based mode once X is available
-        if not self.featureless and (self.model is None or self.trainer is None):
+        if not self.featureless and self.model is None:
             d_x = int(np.asarray(X).shape[-1])
             self.model = DeepContextChoiceModel(
                 num_items=self.num_items,
@@ -85,24 +80,26 @@ class DeepHaloChoiceModel:
                 featureless=False,
                 d_x=d_x,
             )
-            self.trainer = Trainer(self.model, lr=self.lr)
 
         batch = validate_arrays(available=available, choice=choices, item_ids=item_ids, X=X)
 
-        if self.trainer is None:
-            raise RuntimeError("Trainer not initialized.")
+        if self.model.cfg.featureless and batch.item_ids is None:
+            raise ValueError("item_ids is required when featureless=True.")
 
-        self.trainer.fit_arrays(
-            available=batch.available,
-            choices=batch.choice,
-            item_ids=batch.item_ids,
-            X=batch.X,
+        ds_inputs: dict = {"available": batch.available, "choice": batch.choice}
+        if self.model.cfg.featureless:
+            ds_inputs["item_ids"] = batch.item_ids
+        else:
+            ds_inputs["X"] = batch.X
+
+        self.model.compile(optimizer=tf.keras.optimizers.Adam(self.lr))
+        ds = make_dataset(
+            ds_inputs,
             batch_size=self.batch_size,
-            epochs=self.epochs,
-            verbose=self.verbose,
             shuffle=shuffle,
-            seed=seed,
+            seed=seed if seed is not None else self.seed,
         )
+        self.model.fit(ds, epochs=self.epochs, verbose=self.verbose)
         return self
 
     def predict_proba(
@@ -114,13 +111,14 @@ class DeepHaloChoiceModel:
         batch_size: Optional[int] = None,
     ) -> np.ndarray:
         batch = validate_arrays(available=available, choice=None, item_ids=item_ids, X=X)
-        probs = self.trainer.predict_probs(
-            available=batch.available,
-            item_ids=batch.item_ids,
-            X=batch.X,
-            batch_size=batch_size or max(256, self.batch_size),
-        )
-        return probs.numpy()
+        ds_inputs: dict = {"available": batch.available}
+        if self.model.cfg.featureless:
+            ds_inputs["item_ids"] = batch.item_ids
+        else:
+            ds_inputs["X"] = batch.X
+        bs = batch_size or max(256, self.batch_size)
+        ds = make_dataset(ds_inputs, batch_size=bs, shuffle=False)
+        return predict_proba(self.model, ds).numpy()
 
     def negative_log_likelihood(
         self,
@@ -131,7 +129,9 @@ class DeepHaloChoiceModel:
         X: Optional[Any] = None,
     ) -> float:
         batch = validate_arrays(available=available, choice=choices, item_ids=item_ids, X=X)
-        return float(self.model.nll(batch.as_dict(require_choice=True), training=False).numpy())
+        return float(
+            self.model.nll(batch.as_dict(require_choice=True), training=False).numpy()
+        )
 
     # ------------------------------------------------------------------
     # DataFrame convenience API
@@ -169,17 +169,11 @@ class DeepHaloChoiceModel:
         )
 
     # ------------------------------------------------------------------
-    # Backwards-compatible aliases (old signature used DataFrames)
+    # Serialisation
     # ------------------------------------------------------------------
 
-    def fit_legacy(self, df: pd.DataFrame) -> "DeepHaloChoiceModel":
-        return self.fit_df(df)
-
-    def predict_proba_legacy(self, df: pd.DataFrame) -> np.ndarray:
-        return self.predict_proba_df(df)
-
     def to_json(self) -> str:
-        payload = {
+        return json.dumps({
             "num_items": self.num_items,
             "lr": self.lr,
             "epochs": self.epochs,
@@ -188,10 +182,8 @@ class DeepHaloChoiceModel:
             "n_blocks": self.n_blocks,
             "featureless": self.featureless,
             "width_multiplier": self.width_multiplier,
-        }
-        return json.dumps(payload)
+        })
 
     @staticmethod
     def from_json(s: str) -> "DeepHaloChoiceModel":
-        d = json.loads(s)
-        return DeepHaloChoiceModel(**d)
+        return DeepHaloChoiceModel(**json.loads(s))

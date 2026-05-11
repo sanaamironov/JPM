@@ -14,7 +14,7 @@ if str(PART1_ROOT) not in sys.path:
     sys.path.insert(0, str(PART1_ROOT))
 
 from choice_learn_ext.models.deep_context.deep_halo_core import DeepContextChoiceModel
-from choice_learn_ext.models.deep_context.trainer import Trainer
+from choice_learn_ext.models.deep_context.training import make_dataset
 from experiments.paths import results_dir
 
 
@@ -70,15 +70,14 @@ def main():
 
     # Build + train TF model
     model = DeepContextChoiceModel(num_items=J)
-    trainer = Trainer(model, lr=2e-3)
-
-    trainer.fit_arrays(
-        available=tf.convert_to_tensor(available),
-        choices=tf.convert_to_tensor(choices),
-        item_ids=tf.convert_to_tensor(item_ids),
+    model.compile(optimizer=tf.keras.optimizers.Adam(2e-3))
+    ds = make_dataset(
+        {"available": tf.cast(available, tf.float32),
+         "item_ids": tf.cast(item_ids, tf.int32),
+         "choice": tf.cast(choices, tf.int32)},
         batch_size=1024,
-        epochs=80,
     )
+    model.fit(ds, epochs=80, verbose=1)
 
     # Evaluate compromise effect
     eval_sets = {

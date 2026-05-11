@@ -19,7 +19,9 @@ def masked_mean(x: tf.Tensor, mask: tf.Tensor, axis: int = 1) -> tf.Tensor:
     """
     x = tf.cast(x, tf.float32)
     mask = tf.cast(mask, tf.float32)  # (B, J)
-    mask = tf.expand_dims(mask, axis=-1)  # (B, J, 1) — one trailing dim to broadcast over d
+    tf.debugging.assert_rank(x, 3, message="masked_mean: x must be rank 3 (B, J, d)")
+    tf.debugging.assert_rank(mask, 2, message="masked_mean: mask must be rank 2 (B, J)")
+    mask = tf.expand_dims(mask, axis=-1)  # (B, J, 1) — broadcast over d
     num = tf.reduce_sum(x * mask, axis=axis)  # (B, d)
     den = tf.maximum(tf.reduce_sum(mask, axis=axis), 1.0)
     return num / den
@@ -59,10 +61,11 @@ def masked_log_softmax(logits: tf.Tensor,
     neg_inf = tf.constant(-1e9, dtype=logits.dtype)
     masked_logits = tf.where(mask > 0, logits, neg_inf)
     return tf.nn.log_softmax(masked_logits, axis=axis)
+
+
 def apple_silicon():
     is_apple_silicon = sys.platform == "darwin" and platform.machine() == "arm64"
     return is_apple_silicon
-
 
 
 def set_global_determinism(seed: int = 123) -> None:

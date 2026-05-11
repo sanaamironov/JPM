@@ -73,9 +73,7 @@ class DeepHalo(tf.keras.Model):
         return {"utilities": u, "log_probs": log_probs}
 
     def nll(self, inputs: Dict[str, tf.Tensor], training: bool = False) -> tf.Tensor:
-        """
-        Mean negative log-likelihood of observed choices.
-        """
+        """Mean negative log-likelihood of observed choices."""
         outputs = self.call(inputs, training=training)
         logP = outputs["log_probs"]  # (B, J)
         choices = tf.cast(inputs["choice"], tf.int32)
@@ -83,6 +81,19 @@ class DeepHalo(tf.keras.Model):
         idx = tf.stack([tf.range(B, dtype=tf.int32), choices], axis=1)
         chosen_logp = tf.gather_nd(logP, idx)  # (B,)
         return -tf.reduce_mean(chosen_logp)
+
+    def train_step(self, data: Dict[str, tf.Tensor]):
+        """Keras-native training step — called automatically by model.fit()."""
+        with tf.GradientTape() as tape:
+            loss = self.nll(data, training=True)
+            loss = loss + 1e-6 * tf.add_n(
+                [tf.nn.l2_loss(v) for v in self.trainable_variables]
+            )
+        grads = tape.gradient(loss, self.trainable_variables)
+        self.optimizer.apply_gradients(
+            (g, v) for g, v in zip(grads, self.trainable_variables) if g is not None
+        )
+        return {"loss": loss}
 
 
 class DeepContextChoiceModel(DeepHalo):

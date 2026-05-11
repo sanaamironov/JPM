@@ -14,7 +14,7 @@ if str(PART1_ROOT) not in sys.path:
 # ---------------------------------------------------------------------
 
 from choice_learn_ext.models.deep_context.deep_halo_core import DeepContextChoiceModel
-from choice_learn_ext.models.deep_context.trainer import Trainer
+from choice_learn_ext.models.deep_context.training import make_dataset
 
 
 def simulate_decoy_data(N_per_type=500):
@@ -60,16 +60,12 @@ def main():
 
     num_items = 3
     model = DeepContextChoiceModel(num_items=num_items)
-    trainer = Trainer(model, lr=5e-3)
-
-    trainer.fit_arrays(
-        available=available,
-        choices=choices,
-        item_ids=item_ids,
+    model.compile(optimizer=tf.keras.optimizers.Adam(5e-3))
+    ds = make_dataset(
+        {"available": available, "item_ids": item_ids, "choice": choices},
         batch_size=64,
-        epochs=40,
-        verbose=1,
     )
+    model.fit(ds, epochs=40, verbose=1)
 
     # Evaluate on the two specific choice sets A and B
     avail_eval = tf.convert_to_tensor(np.stack([mask_A, mask_B]), dtype=tf.float32)
