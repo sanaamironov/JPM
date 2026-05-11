@@ -6,6 +6,7 @@ __MACOSX/
 Thumbs.db
 .vscode/
 .idea/
+docs/
 
 # ----------------------------
 # Python bytecode / caches
