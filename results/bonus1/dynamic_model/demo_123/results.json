@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-05-11T21:45:16",
+  "timestamp": "2026-05-12T16:02:47",
   "config": {
     "J": 5,
     "T": 20,
@@ -7,22 +7,22 @@
     "true_beta_price": -1.5
   },
   "estimated": {
-    "beta_price": -0.019130803644657135,
-    "pi_hat": 0.09308269619941711,
-    "std_mu": 0.06390737742185593,
-    "mean_abs_d": 0.05148996412754059,
-    "support_sensitivity": 0.0,
-    "support_specificity": 1.0
+    "beta_price": -0.9398624300956726,
+    "pi_hat": 0.09335252642631531,
+    "std_mu": 0.11076316982507706,
+    "mean_abs_d": 0.12878334522247314,
+    "support_sensitivity": 0.55,
+    "support_specificity": 0.525
   },
   "counterfactual": {
     "brand_x": 1,
     "discount_pct": 10.0,
-    "revenue_baseline": 0.9617367095947266,
-    "revenue_promotion": 0.9515069427490235,
-    "revenue_change_abs": -0.010229766845703092,
-    "revenue_change_pct": -1.0636764452927303,
-    "share_x_baseline": 0.0816874713897705,
-    "share_x_promotion": 0.0818636531829834,
-    "share_change_abs": 0.00017618179321289562
+    "revenue_baseline": 0.1473895149230957,
+    "revenue_promotion": 0.14866265869140624,
+    "revenue_change_abs": 0.0012731437683105307,
+    "revenue_change_pct": 0.8637953445780647,
+    "share_x_baseline": 0.1485948257446289,
+    "share_x_promotion": 0.16081761932373048,
+    "share_change_abs": 0.012222793579101582
   }
 }
