@@ -7,7 +7,7 @@
     "true_beta_price": -1.5,
     "gamma_endogeneity": 0.5,
     "sparse_frac": 0.3,
-    "with_cf": true
+    "with_cf": false
   },
   "true": {
     "beta_price": -1.5,
@@ -16,19 +16,19 @@
     "gamma_true_mean": 0.2
   },
   "estimated": {
-    "beta_price": -1.0926811695098877,
-    "beta_price_se": 1.6892303054204845,
+    "beta_price": -0.6242426633834839,
+    "beta_price_se": 1.990835623714128,
     "beta_price_ci": [
-      -4.403512325445034,
-      2.2181499864252587
+      -4.5262094870828715,
+      3.277724160315904
     ],
-    "lambda_control": 0.28575399518013,
-    "pi_hat": 0.09591911733150482,
-    "mu_rmse": 0.8934233784675598,
-    "mu_corr_true": 0.6229642573465642,
-    "mu_std_hat": 0.19238896667957306,
+    "lambda_control": null,
+    "pi_hat": 0.09728220105171204,
+    "mu_rmse": 1.0157310962677002,
+    "mu_corr_true": 0.6001186178564447,
+    "mu_std_hat": 0.046167775988578796,
     "mu_std_true": 0.9345499277114868,
-    "eta_rmse": 0.49448856711387634
+    "eta_rmse": 0.5223680138587952
   },
   "coverage": {
     "beta_price": true,

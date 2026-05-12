@@ -659,7 +659,13 @@ def summarize_methods(method_recs: List[dict], true_params: dict) -> Dict[str, d
 
 
 def write_outputs(
-    out_dir: Path, grid: GridPoint, summary: Dict[str, dict], true_params: dict
+    out_dir: Path,
+    grid: GridPoint,
+    summary: Dict[str, dict],
+    true_params: dict,
+    shrink_kwargs: Optional[dict] = None,
+    n_reps: Optional[int] = None,
+    R_mc: Optional[int] = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -734,12 +740,25 @@ def write_outputs(
         "\n".join(rows) + "\n", encoding="utf-8"
     )
 
+    sk = shrink_kwargs or {}
     cfg_dump = {
         "dgp": grid.dgp,
         "T": grid.T,
         "J": grid.J,
         "true_params": true_params,
         "timestamp": _now(),
+        "n_reps": n_reps,
+        "R_mc": R_mc,
+        "shrink_n_iter": sk.get("n_iter"),
+        "shrink_burn": sk.get("burn"),
+        "shrink_thin": sk.get("thin"),
+        "shrink_v0": sk.get("v0"),
+        "shrink_v1": sk.get("v1"),
+        "shrink_a_pi": sk.get("a_pi"),
+        "shrink_b_pi": sk.get("b_pi"),
+        "shrink_beta_var": sk.get("beta_var"),
+        "shrink_beta_rw_scale": sk.get("beta_rw_scale"),
+        "shrink_pi_rw_scale": sk.get("pi_rw_scale"),
     }
     (out_dir / "config.json").write_text(
         json.dumps(cfg_dump, indent=2), encoding="utf-8"
@@ -880,7 +899,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         summary = summarize_methods(reps, true_params=true_params)
         out_dir = out_root / f"{gp.dgp}_T{gp.T}_J{gp.J}"
-        write_outputs(out_dir, gp, summary, true_params)
+        write_outputs(out_dir, gp, summary, true_params,
+                      shrink_kwargs=shrink_kwargs, n_reps=n_reps, R_mc=R_mc)
 
         print(f"=== DONE  {gp.dgp}  wrote: {out_dir} ===")
         for method, sm in summary.items():

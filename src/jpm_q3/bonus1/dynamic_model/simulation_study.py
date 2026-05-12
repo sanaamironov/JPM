@@ -77,7 +77,10 @@ def _fit_stage(
     continuation value would otherwise bias mu_t toward zero via competition with
     the value head's market_embed.
     """
-    tensors = {k: tf.constant(v) for k, v in data.items()}
+    # Only keep keys consumed by the step function to minimise the input spec.
+    _step_keys = ["item_ids", "available", "price", "price_residual",
+                  "market_id", "household_id", "inventory", "choice"]
+    tensors = {k: tf.constant(data[k]) for k in _step_keys}
     ds = (
         tf.data.Dataset.from_tensor_slices(tensors)
         .shuffle(4096, seed=cfg.seed)
@@ -88,13 +91,22 @@ def _fit_stage(
 
     nll_fn = model.static_choice_nll if use_static_nll else model.choice_nll
 
-    @tf.function
+    J = cfg.num_items
+    _step_sig = {
+        "item_ids":       tf.TensorSpec([None, J], tf.int32),
+        "available":      tf.TensorSpec([None, J], tf.float32),
+        "price":          tf.TensorSpec([None, J], tf.float32),
+        "price_residual": tf.TensorSpec([None, J], tf.float32),
+        "market_id":      tf.TensorSpec([None],    tf.int32),
+        "household_id":   tf.TensorSpec([None],    tf.int32),
+        "inventory":      tf.TensorSpec([None],    tf.float32),
+        "choice":         tf.TensorSpec([None],    tf.int32),
+    }
+
+    @tf.function(input_signature=[_step_sig])
     def step(batch):
-        cur = {k: batch[k] for k in
-               ["item_ids", "available", "price", "price_residual",
-                "market_id", "household_id", "inventory", "choice"]}
         with tf.GradientTape() as tape:
-            nll = nll_fn(cur, training=True)
+            nll = nll_fn(batch, training=True)
             prior = model.sparse_shock_prior_penalty()
             loss = nll + float(cfg.prior_weight) * prior
         grads = tape.gradient(loss, train_vars)
@@ -120,6 +132,7 @@ def run_simulation_study(
     cfg: DynamicModelConfig | None = None,
     out_dir: str | Path | None = None,
     seed: int = 0,
+    with_cf: bool = True,
 ) -> dict:
     """
     Full simulation study:
@@ -127,6 +140,9 @@ def run_simulation_study(
       2. Estimate via two-stage MAP.
       3. Compute exact MAP Hessian credible intervals.
       4. Report true vs. estimated values and coverage.
+
+    with_cf: if False, freeze lambda_control=0 (no Petrin-Train control function).
+    Used to produce the Without-CF baseline in Table 3 of the report.
     """
     if cfg is None:
         cfg = DynamicModelConfig(
@@ -163,6 +179,12 @@ def run_simulation_study(
     # ------------------------------------------------------------------
     model = DynamicContextSparseChoiceModel(cfg)
 
+    if not with_cf:
+        # Disable Petrin-Train control function: fix lambda_control=0.
+        model.lambda_control.assign(0.0)
+        model.lambda_control.trainable = False
+        print("[simulation_study] Control function DISABLED (with_cf=False)")
+
     # Stage 1: Freeze Halo + value head. Train econometric params only.
     # This prevents the value head's market_embed from absorbing mu_t signal.
     print("\n[simulation_study] Stage 1: econometric params (Halo + value head frozen)...")
@@ -171,8 +193,10 @@ def run_simulation_study(
     model.value_head.trainable = False
 
     econometric_vars = [
-        model.beta_price, model.lambda_control,
-        model.mu, model.d, model.eta, model.logit_pi,
+        v for v in [
+            model.beta_price, model.lambda_control,
+            model.mu, model.d, model.eta, model.logit_pi,
+        ] if v.trainable
     ]
     _fit_stage(model, cfg, data, econometric_vars,
                epochs=cfg.epochs, lr=cfg.lr, label="S1",
@@ -241,6 +265,7 @@ def run_simulation_study(
             "J": cfg.J, "T": cfg.T, "num_households": cfg.num_households,
             "epochs": cfg.epochs, "true_beta_price": cfg.true_beta_price,
             "gamma_endogeneity": cfg.gamma_endogeneity, "sparse_frac": cfg.sparse_frac,
+            "with_cf": with_cf,
         },
         "true": {
             "beta_price": float(cfg.true_beta_price),
@@ -253,7 +278,7 @@ def run_simulation_study(
             "beta_price_se": float(intervals["beta_price"]["se"]),
             "beta_price_ci": [float(intervals["beta_price"]["ci_lower"]),
                               float(intervals["beta_price"]["ci_upper"])],
-            "lambda_control": float(model.lambda_control.numpy()),
+            "lambda_control": float(model.lambda_control.numpy()) if with_cf else None,
             "pi_hat": float(tf.math.sigmoid(model.logit_pi).numpy()),
             "mu_rmse": float(np.sqrt(np.mean(
                 (model.mu.numpy() - meta["mu_true"]) ** 2
@@ -277,10 +302,11 @@ def run_simulation_study(
     if out_dir is not None:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
-        (out / "simulation_study.json").write_text(
+        fname = "simulation_study.json" if with_cf else "simulation_study_no_cf.json"
+        (out / fname).write_text(
             json.dumps(summary, indent=2), encoding="utf-8"
         )
-        print(f"\n[simulation_study] Results saved to {out}")
+        print(f"\n[simulation_study] Results saved to {out / fname}")
 
     return summary
 
@@ -299,7 +325,17 @@ def main() -> None:
         force_cpu=True,
         seed=0,
     )
-    run_simulation_study(cfg, out_dir="results/bonus1/simulation_study")
+    import os
+    out = "results/bonus1/simulation_study"
+    # With CF: skip if artifact already exists (pre-computed for the report).
+    # To force a fresh run, delete results/bonus1/simulation_study/simulation_study.json first.
+    if not os.path.exists(os.path.join(out, "simulation_study.json")):
+        run_simulation_study(cfg, out_dir=out, with_cf=True)
+    else:
+        print("[main] simulation_study.json already exists — skipping with-CF run.")
+        print("       Delete it and re-run to regenerate.")
+    # Without CF: always produces simulation_study_no_cf.json (Table 3 baseline).
+    run_simulation_study(cfg, out_dir=out, with_cf=False)
 
 
 if __name__ == "__main__":

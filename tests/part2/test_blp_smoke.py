@@ -8,6 +8,7 @@ from jpm_q3.lu25.estimators.blp import (
     compute_delta_vec,
     build_matrices,
 )
+from jpm_q3.lu25.experiments.replicate_section4 import build_matrices_paper
 
 
 class TestBLPSmoke(unittest.TestCase):
@@ -74,6 +75,96 @@ class TestBLPSmoke(unittest.TestCase):
         X, Z = build_matrices(markets, iv_type="cost")
         self.assertEqual(X.shape, (T * J, 3))   # [1, p, w]
         self.assertEqual(Z.shape, (T * J, 5))   # [1, w, w^2, u, u^2]
+
+
+class TestBuildMatricesPaper(unittest.TestCase):
+    def _make_markets(self, T=3, J=4):
+        rng = np.random.default_rng(0)
+        markets = []
+        for _ in range(T):
+            markets.append({
+                "p": rng.uniform(1, 3, J),
+                "w": rng.uniform(0.5, 2, J),
+                "u": rng.normal(0, 1, J),
+            })
+        return markets
+
+    def test_x_shape(self):
+        markets = self._make_markets(T=3, J=4)
+        X, Z, wbar = build_matrices_paper(markets, iv_type="cost")
+        self.assertEqual(X.shape, (3 * 4, 2))
+
+    def test_z_shape_cost_iv(self):
+        markets = self._make_markets(T=3, J=4)
+        X, Z, wbar = build_matrices_paper(markets, iv_type="cost")
+        self.assertEqual(Z.shape, (3 * 4, 4))
+
+    def test_centering_identity(self):
+        T, J = 3, 4
+        markets = self._make_markets(T=T, J=J)
+        X, Z, wbar = build_matrices_paper(markets, iv_type="cost")
+        w_c = X[:, 1]
+        for t in range(T):
+            block = w_c[t * J : (t + 1) * J]
+            self.assertAlmostEqual(float(block.mean()), 0.0, places=10)
+
+    def test_xi_correction_roundtrip(self):
+        T, J = 3, 4
+        markets = self._make_markets(T=T, J=J)
+        X, Z, wbar = build_matrices_paper(markets, iv_type="cost")
+        w_c = X[:, 1]
+        w_recovered = w_c + wbar
+        w_true = np.concatenate([m["w"] for m in markets])
+        np.testing.assert_allclose(w_recovered, w_true, atol=1e-10)
+
+    def test_no_constant_column(self):
+        markets = self._make_markets(T=3, J=4)
+        X, Z, _ = build_matrices_paper(markets, iv_type="cost")
+        for col in range(X.shape[1]):
+            self.assertFalse(
+                np.allclose(X[:, col], 1.0),
+                f"Column {col} of X appears to be a constant column",
+            )
+
+    # ------------------------------------------------------------------
+    # nocost IV variant
+    # ------------------------------------------------------------------
+
+    def test_z_shape_nocost_iv(self):
+        """Nocost IV: Z must be (T*J, 4) — columns [w_c, w_c^2, w_c^3, w_c^4]."""
+        markets = self._make_markets(T=3, J=4)
+        X, Z, _ = build_matrices_paper(markets, iv_type="nocost")
+        self.assertEqual(X.shape, (3 * 4, 2))
+        self.assertEqual(Z.shape, (3 * 4, 4))
+
+    def test_nocost_centering_identity(self):
+        """Within-market centering of w must hold for nocost IV too."""
+        T, J = 3, 4
+        markets = self._make_markets(T=T, J=J)
+        X, Z, wbar = build_matrices_paper(markets, iv_type="nocost")
+        w_c = X[:, 1]
+        for t in range(T):
+            block = w_c[t * J : (t + 1) * J]
+            self.assertAlmostEqual(float(block.mean()), 0.0, places=10)
+
+    def test_nocost_z_differs_from_cost_z(self):
+        """Nocost and cost IV must produce different Z matrices (different instruments)."""
+        markets = self._make_markets(T=3, J=4)
+        _, Z_cost, _ = build_matrices_paper(markets, iv_type="cost")
+        _, Z_nocost, _ = build_matrices_paper(markets, iv_type="nocost")
+        self.assertFalse(
+            np.allclose(Z_cost, Z_nocost),
+            "Cost and nocost IV produced identical Z matrices",
+        )
+
+    def test_nocost_xi_correction_roundtrip(self):
+        """wbar_vec + w_c recovers the original w vector for nocost IV."""
+        T, J = 3, 4
+        markets = self._make_markets(T=T, J=J)
+        X, Z, wbar = build_matrices_paper(markets, iv_type="nocost")
+        w_c = X[:, 1]
+        w_true = np.concatenate([m["w"] for m in markets])
+        np.testing.assert_allclose(w_c + wbar, w_true, atol=1e-10)
 
 
 if __name__ == "__main__":

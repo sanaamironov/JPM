@@ -44,8 +44,9 @@ class DynamicModelConfig:
 
     # ---- Estimation parameters (used by estimator, not DGP) ----
     # Common discount used in estimation (approximation; true delta_i are consumer-specific).
-    # Stated as a modeling assumption in the report.
-    discount: float = 0.90
+    # Set to E[Uniform(delta_min, delta_max)] = (0.70 + 0.95) / 2 = 0.825 to minimise
+    # the misspecification bias from using a shared value in place of heterogeneous delta_i.
+    discount: float = 0.825
     # Initialise beta_price at a negative value (a reasonable prior: higher
     # price lowers demand). Starting at 0 leaves the optimiser in a flat
     # local-minimum basin and prevents the control function from converging.

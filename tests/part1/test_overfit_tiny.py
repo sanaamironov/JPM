@@ -7,6 +7,9 @@ from choice_learn_ext.models.deep_context.training import make_dataset
 
 
 class TestOverfitTiny(unittest.TestCase):
+    def setUp(self):
+        tf.random.set_seed(0)
+
     def test_overfit_single_choice_pattern(self):
         """Model should strongly favour item 1 after training on a dataset
         where item 1 is always chosen from a 3-item set."""

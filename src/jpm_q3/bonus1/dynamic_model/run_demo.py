@@ -14,7 +14,7 @@ from .config import DynamicModelConfig
 from .counterfactual import price_promotion_analysis, print_counterfactual_summary
 from .data import simulate_dynamic_panel
 from .model import DynamicContextSparseChoiceModel
-from .trainer import DynamicTrainer
+from .simulation_study import _fit_stage
 
 
 def main() -> None:
@@ -42,10 +42,26 @@ def main() -> None:
     print(f"  Gamma endogeneity: {cfg.gamma_endogeneity:.3f}")
 
     model = DynamicContextSparseChoiceModel(cfg)
-    model.halo.trainable = True  # freeze Halo for demo; full study unfreezes jointly
 
-    trainer = DynamicTrainer(model, cfg)
-    trainer.fit(data)
+    # Stage 1: freeze Halo + value head, train econometric params with static NLL.
+    print("\nStage 1: econometric params (Halo + value head frozen)...")
+    model.halo.trainable = False
+    model.market_embed.trainable = False
+    model.value_head.trainable = False
+    econometric_vars = [
+        model.beta_price, model.lambda_control,
+        model.mu, model.d, model.eta, model.logit_pi,
+    ]
+    _fit_stage(model, cfg, data, econometric_vars,
+               epochs=cfg.epochs, lr=cfg.lr, label="S1", use_static_nll=True)
+
+    # Stage 2: unfreeze all, joint fine-tuning.
+    print("\nStage 2: joint fine-tuning (all params)...")
+    model.halo.trainable = True
+    model.market_embed.trainable = True
+    model.value_head.trainable = True
+    _fit_stage(model, cfg, data, model.trainable_variables,
+               epochs=max(10, cfg.epochs // 3), lr=cfg.lr * 0.3, label="S2")
 
     # Diagnostics
     pi_hat = float(tf.math.sigmoid(model.logit_pi).numpy())
