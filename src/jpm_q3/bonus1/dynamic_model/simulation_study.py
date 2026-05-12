@@ -194,12 +194,17 @@ def run_simulation_study(
     _fit_stage(model, cfg, data, all_vars,
                epochs=max(10, cfg.epochs // 3), lr=cfg.lr * 0.3, label="S2")
 
-    print(f"\n  beta_price final: {float(model.beta_price.numpy()):.4f}  "
+    print(f"\n  beta_price final:    {float(model.beta_price.numpy()):.4f}  "
           f"(true: {cfg.true_beta_price:.3f})")
-    print(f"  std(mu) final:    {float(tf.math.reduce_std(model.mu).numpy()):.4f}")
-    print(f"  mean|d| final:    {float(tf.reduce_mean(tf.abs(model.d)).numpy()):.4f}")
+    print(f"  lambda_control final: {float(model.lambda_control.numpy()):.4f}")
+    print(f"  std(mu) final:       {float(tf.math.reduce_std(model.mu).numpy()):.4f}  "
+          f"(true: {cfg.mu_true_sd:.3f})")
+    mu_hat = model.mu.numpy()
+    mu_corr = float(np.corrcoef(mu_hat, meta["mu_true"])[0, 1])
+    print(f"  corr(mu_hat,true):   {mu_corr:.4f}  (closer to 1 = better direction)")
+    print(f"  mean|d| final:       {float(tf.reduce_mean(tf.abs(model.d)).numpy()):.4f}")
     eta_rmse = float(np.sqrt(np.mean((model.eta.numpy() - meta["eta_true"]) ** 2)))
-    print(f"  eta RMSE final:   {eta_rmse:.4f}  (true sd: {cfg.sigma_eta:.3f})")
+    print(f"  eta RMSE final:      {eta_rmse:.4f}  (true sd: {cfg.sigma_eta:.3f})")
 
     # ------------------------------------------------------------------
     # Step 3: Exact MAP Hessian credible intervals
@@ -248,9 +253,18 @@ def run_simulation_study(
             "beta_price_se": float(intervals["beta_price"]["se"]),
             "beta_price_ci": [float(intervals["beta_price"]["ci_lower"]),
                               float(intervals["beta_price"]["ci_upper"])],
+            "lambda_control": float(model.lambda_control.numpy()),
             "pi_hat": float(tf.math.sigmoid(model.logit_pi).numpy()),
             "mu_rmse": float(np.sqrt(np.mean(
                 (model.mu.numpy() - meta["mu_true"]) ** 2
+            ))),
+            "mu_corr_true": float(np.corrcoef(
+                model.mu.numpy(), meta["mu_true"]
+            )[0, 1]),
+            "mu_std_hat": float(model.mu.numpy().std()),
+            "mu_std_true": float(meta["mu_true"].std()),
+            "eta_rmse": float(np.sqrt(np.mean(
+                (model.eta.numpy() - meta["eta_true"]) ** 2
             ))),
         },
         "coverage": {
