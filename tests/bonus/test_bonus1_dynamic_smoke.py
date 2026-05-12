@@ -210,6 +210,37 @@ class TestBonus1Model(unittest.TestCase):
         self.assertGreaterEqual(float(nll.numpy()), 0.0)
         self.assertTrue(np.isfinite(float(nll.numpy())))
 
+    def test_td_weight_contributes_to_total_loss(self):
+        cfg = _small_cfg(td_weight=0.0)
+        data, _ = simulate_dynamic_panel(cfg)
+        batch = {k: tf.constant(v[:4]) for k, v in data.items()}
+        model = DynamicContextSparseChoiceModel(cfg)
+        cur = {k: batch[k] for k in
+               ["item_ids", "available", "price", "price_residual",
+                "market_id", "household_id", "inventory", "choice"]}
+        nxt = {
+            "item_ids": batch["next_item_ids"],
+            "available": batch["next_available"],
+            "price": batch["next_price"],
+            "price_residual": batch["next_price_residual"],
+            "market_id": batch["next_market_id"],
+            "household_id": batch["next_household_id"],
+            "inventory": batch["next_inventory"],
+        }
+
+        parts0 = model.compute_loss(
+            cur, nxt, batch["reward"], batch["done"], training=False
+        )
+        model.cfg.td_weight = 0.5
+        parts1 = model.compute_loss(
+            cur, nxt, batch["reward"], batch["done"], training=False
+        )
+
+        expected_delta = 0.5 * float(parts0["td"].numpy())
+        actual_delta = float((parts1["total"] - parts0["total"]).numpy())
+        self.assertGreater(float(parts0["td"].numpy()), 0.0)
+        self.assertAlmostEqual(actual_delta, expected_delta, places=5)
+
     def test_lambda_control_is_trainable(self):
         model = DynamicContextSparseChoiceModel(self.cfg)
         self.assertEqual(model.lambda_control.shape, ())
