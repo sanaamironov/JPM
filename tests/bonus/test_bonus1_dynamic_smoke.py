@@ -236,6 +236,35 @@ class TestBonus1Model(unittest.TestCase):
         self.assertTrue(np.isfinite(float(model.beta_price.numpy())))
 
 
+class TestBonus1CoverageStudy(unittest.TestCase):
+    def setUp(self):
+        np.random.seed(0)
+        tf.random.set_seed(0)
+        try:
+            tf.config.set_visible_devices([], "GPU")
+        except Exception:
+            pass
+
+    def test_coverage_study_runs_and_produces_summary(self):
+        """Multi-seed coverage study: tiny config, 2 seeds, smoke-level."""
+        from jpm_q3.bonus1.dynamic_model.coverage_study import run_coverage_study
+
+        cfg = DynamicModelConfig(
+            num_households=10, T=5, epochs=3, batch_size=32,
+            compile_train_step=False, force_cpu=True,
+        )
+        summary = run_coverage_study(base_cfg=cfg, n_seeds=2)
+
+        self.assertIn("empirical_coverage_95", summary)
+        self.assertIn("point_estimate_distribution", summary)
+        self.assertEqual(len(summary["per_seed"]), 2)
+
+        for key in ("beta_price", "mu", "d"):
+            cov = summary["empirical_coverage_95"][key]
+            self.assertGreaterEqual(cov, 0.0)
+            self.assertLessEqual(cov, 1.0)
+
+
 class TestBonus1Counterfactual(unittest.TestCase):
     def setUp(self):
         np.random.seed(0)
