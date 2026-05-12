@@ -19,14 +19,15 @@ from .model import DynamicContextSparseChoiceModel
 def _compute_expected_revenue(
     model: DynamicContextSparseChoiceModel,
     data: Dict[str, np.ndarray],
+    brand_x: int,
     price_override: Optional[np.ndarray] = None,
     batch_size: int = 512,
 ) -> float:
     """
-    Compute expected revenue = Σ_n P(choose brand X | s_n, A_n, p_n) * p_X_n.
+    Compute brand-X expected revenue per observation.
 
-    price_override: if supplied, replaces the price column for brand X in every
-    observation.  Shape must match data["price"].
+    price_override: if supplied, replaces the full price matrix. Shape must
+    match data["price"].
     """
     prices = data["price"].copy()
     if price_override is not None:
@@ -54,8 +55,7 @@ def _compute_expected_revenue(
         probs = tf.exp(out["log_probs"]).numpy()     # (B, J+1)
         p_batch = batch["price"].numpy()              # (B, J+1)
 
-        # Revenue = Σ_j P(j) * price_j   (summed over inside goods)
-        rev = np.sum(probs[:, 1:] * p_batch[:, 1:], axis=1)   # (B,)
+        rev = probs[:, brand_x] * p_batch[:, brand_x]
         total_rev += float(rev.sum())
 
     return total_rev / len(data["choice"])
@@ -75,7 +75,7 @@ def price_promotion_analysis(
     discount_pct: percentage price reduction applied to brand X in all periods
 
     Returns a dict with:
-        revenue_baseline       : expected revenue per consumer per period (no promotion)
+        revenue_baseline       : brand-X expected revenue per consumer-period
         revenue_promotion      : same, with the promotion
         revenue_change_abs     : absolute change
         revenue_change_pct     : percentage change
@@ -117,7 +117,7 @@ def price_promotion_analysis(
             probs = tf.exp(out["log_probs"]).numpy()
             p = batch["price"].numpy()
             b = probs.shape[0]
-            total_rev += float(np.sum(probs[:, 1:] * p[:, 1:]))
+            total_rev += float(np.sum(probs[:, brand_x] * p[:, brand_x]))
             total_share += float(probs[:, brand_x].sum())
             n += b
         return total_rev / n, total_share / n

@@ -284,6 +284,55 @@ class TestBonus1Counterfactual(unittest.TestCase):
                     "share_x_baseline", "share_x_promotion"]:
             self.assertIn(key, result)
 
+    def test_counterfactual_revenue_is_brand_specific(self):
+        """Reported revenue must be for brand X, not all inside goods."""
+        cfg = _small_cfg()
+        data, _ = simulate_dynamic_panel(cfg)
+        model = DynamicContextSparseChoiceModel(cfg)
+        brand_x = 1
+        discount_pct = 10.0
+
+        result = price_promotion_analysis(
+            model, data, cfg, brand_x=brand_x, discount_pct=discount_pct
+        )
+
+        def _probs_for_prices(prices):
+            batch = {k: tf.constant(v) for k, v in data.items()}
+            batch["price"] = tf.constant(prices)
+            out = model(
+                {
+                    "item_ids": batch["item_ids"],
+                    "available": batch["available"],
+                    "price": batch["price"],
+                    "price_residual": batch["price_residual"],
+                    "market_id": batch["market_id"],
+                    "household_id": batch["household_id"],
+                    "inventory": batch["inventory"],
+                },
+                training=False,
+            )
+            return tf.exp(out["log_probs"]).numpy()
+
+        prices_base = data["price"].copy()
+        probs_base = _probs_for_prices(prices_base)
+        expected_base = float(
+            np.mean(probs_base[:, brand_x] * prices_base[:, brand_x])
+        )
+        category_base = float(
+            np.mean(np.sum(probs_base[:, 1:] * prices_base[:, 1:], axis=1))
+        )
+
+        prices_promo = prices_base.copy()
+        prices_promo[:, brand_x] *= 1.0 - discount_pct / 100.0
+        probs_promo = _probs_for_prices(prices_promo)
+        expected_promo = float(
+            np.mean(probs_promo[:, brand_x] * prices_promo[:, brand_x])
+        )
+
+        self.assertAlmostEqual(result["revenue_baseline"], expected_base, places=6)
+        self.assertAlmostEqual(result["revenue_promotion"], expected_promo, places=6)
+        self.assertGreater(category_base, expected_base + 1e-6)
+
     def test_promotion_increases_brand_share(self):
         """A price cut should weakly increase the promoted brand's market share."""
         cfg = _small_cfg(epochs=5)
