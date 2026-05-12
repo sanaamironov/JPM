@@ -66,7 +66,17 @@ def _fit_stage(
     epochs: int,
     lr: float = 1e-3,
     label: str = "Stage",
+    use_static_nll: bool = False,
 ) -> None:
+    """
+    Train `train_vars` for `epochs` epochs.
+
+    If `use_static_nll=True`, the NLL is computed using only the static utility
+    components (no continuation value). This is appropriate for Stage 1 where the
+    value head is frozen at its random initialisation — including the random
+    continuation value would otherwise bias mu_t toward zero via competition with
+    the value head's market_embed.
+    """
     tensors = {k: tf.constant(v) for k, v in data.items()}
     ds = (
         tf.data.Dataset.from_tensor_slices(tensors)
@@ -76,12 +86,15 @@ def _fit_stage(
     )
     opt = tf.keras.optimizers.Adam(learning_rate=lr)
 
+    nll_fn = model.static_choice_nll if use_static_nll else model.choice_nll
+
     @tf.function
     def step(batch):
         cur = {k: batch[k] for k in
-               ["item_ids", "available", "price", "market_id", "inventory", "choice"]}
+               ["item_ids", "available", "price", "market_id",
+                "household_id", "inventory", "choice"]}
         with tf.GradientTape() as tape:
-            nll = model.choice_nll(cur, training=True)
+            nll = nll_fn(cur, training=True)
             prior = model.sparse_shock_prior_penalty()
             loss = nll + float(cfg.prior_weight) * prior
         grads = tape.gradient(loss, train_vars)
@@ -157,9 +170,10 @@ def run_simulation_study(
     model.market_embed.trainable = False
     model.value_head.trainable = False
 
-    econometric_vars = [model.beta_price, model.mu, model.d, model.logit_pi]
+    econometric_vars = [model.beta_price, model.mu, model.d, model.eta, model.logit_pi]
     _fit_stage(model, cfg, data, econometric_vars,
-               epochs=cfg.epochs, lr=cfg.lr, label="S1")
+               epochs=cfg.epochs, lr=cfg.lr, label="S1",
+               use_static_nll=True)
 
     print(f"  beta_price after Stage 1: {float(model.beta_price.numpy()):.4f}  "
           f"(true: {cfg.true_beta_price:.3f})")
@@ -179,6 +193,8 @@ def run_simulation_study(
           f"(true: {cfg.true_beta_price:.3f})")
     print(f"  std(mu) final:    {float(tf.math.reduce_std(model.mu).numpy()):.4f}")
     print(f"  mean|d| final:    {float(tf.reduce_mean(tf.abs(model.d)).numpy()):.4f}")
+    eta_rmse = float(np.sqrt(np.mean((model.eta.numpy() - meta["eta_true"]) ** 2)))
+    print(f"  eta RMSE final:   {eta_rmse:.4f}  (true sd: {cfg.sigma_eta:.3f})")
 
     # ------------------------------------------------------------------
     # Step 3: Exact MAP Hessian credible intervals

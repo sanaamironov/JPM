@@ -4,8 +4,11 @@ from typing import Dict
 
 import numpy as np
 import tensorflow as tf
+import tensorflow_probability as tfp
 from choice_learn_ext.models.deep_context.config import DeepHaloConfig
 from choice_learn_ext.models.deep_context.deep_halo_core import DeepHalo
+
+tfd = tfp.distributions
 
 from .config import DynamicModelConfig
 
@@ -81,6 +84,16 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
             dtype=tf.float32,
         )
 
+        # --- Consumer-specific brand tastes (revised question item (2)) ---
+        # eta_ij: heterogeneous across consumers, homogeneous across time.
+        self.eta = self.add_weight(
+            name="eta",
+            shape=(cfg.num_households, cfg.J),
+            initializer="zeros",
+            trainable=True,
+            dtype=tf.float32,
+        )
+
         # Sparsity inclusion probability (logit scale)
         pi0 = float(cfg.a_pi / (cfg.a_pi + cfg.b_pi))
         pi0 = min(max(pi0, 1e-6), 1.0 - 1e-6)
@@ -114,29 +127,39 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         self, inputs: Dict[str, tf.Tensor], training: bool
     ) -> tf.Tensor:
         """
-        u_aug = u_halo + beta_price * p_jt + 1{j>0} * (mu_t + d_jt)
+        u_aug = u_halo + beta_price * p_jt + 1{j>0} * (mu_t + d_jt + eta_ij)
 
         Shape: (B, J+1)
         """
         out = self.halo(inputs, training=training)
         u_halo = out["utilities"]   # (B, J+1)
 
-        market_id = tf.cast(inputs["market_id"], tf.int32)   # (B,)
+        market_id = tf.cast(inputs["market_id"], tf.int32)        # (B,)
+        household_id = tf.cast(inputs["household_id"], tf.int32)  # (B,)
+
         mu_t = tf.gather(self.mu, market_id)                  # (B,)
         d_t = tf.gather(self.d, market_id)                    # (B, J)
+        eta_i = tf.gather(self.eta, household_id)             # (B, J)
 
         if self._center_d:
             d_t = d_t - tf.reduce_mean(d_t, axis=1, keepdims=True)
 
-        # Pad outside option column (index 0) with zero shock
-        d_pad = tf.concat([tf.zeros_like(d_t[:, :1]), d_t], axis=1)  # (B, J+1)
+        # Pad outside option column (index 0) with zero shock for both d and eta.
+        d_pad = tf.concat([tf.zeros_like(d_t[:, :1]), d_t], axis=1)        # (B, J+1)
+        eta_pad = tf.concat([tf.zeros_like(eta_i[:, :1]), eta_i], axis=1)  # (B, J+1)
         inside_mask = tf.concat(
             [tf.zeros_like(d_pad[:, :1]), tf.ones_like(d_pad[:, 1:])], axis=1
         )  # (B, J+1)
 
         prices = tf.cast(inputs["price"], tf.float32)   # (B, J+1)
 
-        return u_halo + self.beta_price * prices + inside_mask * mu_t[:, None] + d_pad
+        return (
+            u_halo
+            + self.beta_price * prices
+            + inside_mask * mu_t[:, None]
+            + d_pad
+            + eta_pad
+        )
 
     def _value_from(
         self,
@@ -230,6 +253,28 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         idx = tf.stack([tf.range(tf.shape(y)[0], dtype=tf.int32), y], axis=1)
         return -tf.reduce_mean(tf.gather_nd(out["log_probs"], idx))
 
+    def static_choice_nll(
+        self, inputs: Dict[str, tf.Tensor], training: bool = False
+    ) -> tf.Tensor:
+        """
+        NLL using only static utilities — no continuation value contribution.
+
+        This is the appropriate objective for Stage 1 of the two-stage estimator
+        where the value head is frozen at its random initialisation.  Using the
+        full `choice_nll` in that setting allows the random `market_embed`
+        in the value head to absorb time-period variation that should be
+        attributed to mu_t, biasing mu recovery toward zero.
+        """
+        u_aug = self._augmented_utilities(inputs, training=training)
+        avail = tf.cast(inputs["available"], tf.float32)
+        u_masked = tf.where(
+            avail > 0.5, u_aug, tf.constant(float("-inf"), dtype=u_aug.dtype)
+        )
+        log_probs = tf.nn.log_softmax(u_masked, axis=1)
+        y = tf.cast(inputs["choice"], tf.int32)
+        idx = tf.stack([tf.range(tf.shape(y)[0], dtype=tf.int32), y], axis=1)
+        return -tf.reduce_mean(tf.gather_nd(log_probs, idx))
+
     def td_error_loss(
         self,
         inputs: Dict[str, tf.Tensor],
@@ -246,32 +291,62 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         return tf.reduce_mean(tf.square(v - target))
 
     def sparse_shock_prior_penalty(self) -> tf.Tensor:
-        """Spike-and-slab-inspired negative log prior on d (MAP penalty)."""
-        d_flat = tf.reshape(self.d, [-1])
-        pi = tf.math.sigmoid(self.logit_pi)
-        eps = tf.constant(1e-7, dtype=tf.float32)
-        pi = tf.clip_by_value(pi, eps, 1.0 - eps)
+        """
+        Negative log prior (MAP penalty) implemented with TensorFlow Probability.
+
+        Three components, each using a tfd distribution:
+
+        1. Spike-and-slab on d  — tfd.MixtureSameFamily of two Gaussians:
+               spike: N(0, sqrt(v0))  weight (1 - pi)
+               slab:  N(0, sqrt(v1))  weight pi
+
+        2. Beta prior on pi  — tfd.Beta(a_pi, b_pi) evaluated at sigmoid(logit_pi),
+           plus the log-Jacobian for the logit reparameterisation.
+
+        3. Gaussian prior on mu  — tfd.Normal(0, mu_sd).
+        """
+        d_flat = tf.reshape(self.d, [-1])   # (T*J,)
+        pi = tf.clip_by_value(tf.math.sigmoid(self.logit_pi), 1e-7, 1.0 - 1e-7)
 
         v0 = tf.constant(self.cfg.v0, dtype=tf.float32)
         v1 = tf.constant(self.cfg.v1, dtype=tf.float32)
-        log2pi = tf.constant(float(np.log(2.0 * np.pi)), dtype=tf.float32)
 
-        logn0 = -0.5 * (tf.math.log(v0) + log2pi + tf.square(d_flat) / v0)
-        logn1 = -0.5 * (tf.math.log(v1) + log2pi + tf.square(d_flat) / v1)
-        log_mix = tf.reduce_logsumexp(
-            tf.stack([tf.math.log1p(-pi) + logn0, tf.math.log(pi) + logn1], axis=0),
-            axis=0,
+        # 1. Spike-and-slab prior on d via tfd.MixtureSameFamily
+        spike_slab = tfd.MixtureSameFamily(
+            mixture_distribution=tfd.Categorical(
+                probs=tf.stack([1.0 - pi, pi])   # (2,) — weights for spike, slab
+            ),
+            components_distribution=tfd.Normal(
+                loc=tf.zeros(2, dtype=tf.float32),
+                scale=tf.stack([tf.sqrt(v0), tf.sqrt(v1)]),
+            ),
         )
 
-        a = tf.constant(self.cfg.a_pi, dtype=tf.float32)
-        b_pi = tf.constant(self.cfg.b_pi, dtype=tf.float32)
-        log_beta = tf.math.lgamma(a) + tf.math.lgamma(b_pi) - tf.math.lgamma(a + b_pi)
-        beta_lp = (a - 1.0) * tf.math.log(pi) + (b_pi - 1.0) * tf.math.log1p(-pi) - log_beta
-        log_jac = tf.math.log(pi) + tf.math.log1p(-pi)
+        # 2. Beta prior on pi (probability space) + logit-space Jacobian
+        beta_prior = tfd.Beta(
+            concentration1=tf.constant(self.cfg.a_pi, dtype=tf.float32),
+            concentration0=tf.constant(self.cfg.b_pi, dtype=tf.float32),
+        )
+        log_jac = tf.math.log(pi) + tf.math.log1p(-pi)   # d(pi)/d(logit_pi)
 
-        mu_ridge = 0.5 * tf.reduce_mean(tf.square(self.mu)) / (self.cfg.mu_sd ** 2)
+        # 3. Gaussian prior on mu via tfd.Normal
+        mu_prior = tfd.Normal(
+            loc=tf.constant(0.0, dtype=tf.float32),
+            scale=tf.constant(self.cfg.mu_sd, dtype=tf.float32),
+        )
 
-        return -tf.reduce_mean(log_mix) - (beta_lp + log_jac) + mu_ridge
+        # 4. Gaussian prior on eta_ij (consumer-brand tastes) via tfd.Normal
+        eta_prior = tfd.Normal(
+            loc=tf.constant(0.0, dtype=tf.float32),
+            scale=tf.constant(self.cfg.sigma_eta, dtype=tf.float32),
+        )
+
+        return (
+            -tf.reduce_mean(spike_slab.log_prob(d_flat))        # spike-and-slab on d
+            - (beta_prior.log_prob(pi) + log_jac)               # Beta prior on pi (logit)
+            - tf.reduce_mean(mu_prior.log_prob(self.mu))        # Gaussian prior on mu
+            - tf.reduce_mean(eta_prior.log_prob(self.eta))      # Gaussian prior on eta_ij
+        )
 
     def compute_loss(
         self,

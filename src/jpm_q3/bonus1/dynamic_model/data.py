@@ -71,6 +71,7 @@ def _backward_induction(
     halo_t: np.ndarray,          # (T, num_items) float32
     alpha: np.ndarray,           # (J,) float32  brand fixed effects for items 1..J
     xi_t: np.ndarray,            # (T, J) float32  xi_jt = mu_t + d_jt (inside goods)
+    eta_i: np.ndarray,           # (J,) float32   consumer i's brand-specific tastes
     kappa: float,
     delta_i: float,
     beta_price: float,
@@ -116,6 +117,7 @@ def _backward_induction(
                         + beta_price * float(price[j])
                         + float(halo[j])
                         + float(xi[j - 1])
+                        + float(eta_i[j - 1])     # consumer-specific brand taste
                     )
                     v_nxt = V[t + 1, s_next_in[s]]
                 util_vec.append(u + delta_i * v_nxt)
@@ -142,6 +144,7 @@ def _forward_simulate(
     halo_t: np.ndarray,
     alpha: np.ndarray,
     xi_t: np.ndarray,
+    eta_i: np.ndarray,           # (J,) consumer's brand-specific tastes
     kappa: float,
     delta_i: float,
     beta_price: float,
@@ -182,6 +185,7 @@ def _forward_simulate(
                     + beta_price * float(price[j])
                     + float(halo[j])
                     + float(xi[j - 1])
+                    + float(eta_i[j - 1])     # consumer-specific brand taste
                 )
                 v_nxt = V[t + 1, s_next_in[s]]
             util_vec.append(u + delta_i * v_nxt)
@@ -256,12 +260,12 @@ def simulate_dynamic_panel(
     # 3. Brand cost shifters (fixed across time)
     c_brand = rng.uniform(0.5, 2.0, size=J).astype(np.float32)
 
-    # 4. Endogenous prices: p_jt = c_j + gamma * xi_jt + eta_jt (inside goods only)
-    eta = rng.normal(0.0, cfg.sigma_price_noise, size=(T, J)).astype(np.float32)
+    # 4. Endogenous prices: p_jt = c_j + gamma * xi_jt + price_noise_jt (inside goods only)
+    price_noise = rng.normal(0.0, cfg.sigma_price_noise, size=(T, J)).astype(np.float32)
     price_inside = (
         c_brand[None, :]
         + cfg.gamma_endogeneity * xi_true
-        + eta
+        + price_noise
     )
     price_inside = np.clip(price_inside, 0.1, None).astype(np.float32)  # prices are positive
 
@@ -269,13 +273,15 @@ def simulate_dynamic_panel(
     price_all = np.zeros((T, n_items), dtype=np.float32)
     price_all[:, 1:] = price_inside   # (T, J+1), column 0 = outside = 0
 
-    # 5. Common choice sets A_t per time period (same across consumers)
+    # 5. Common choice sets A_t per time period (same across consumers).
+    # Question: A_t ⊆ {1,...,J} with |A_t| ≥ 3 BRANDS (inside goods only;
+    # outside option is always available in addition).
     avail_all = np.zeros((T, n_items), dtype=np.float32)
     avail_all[:, 0] = 1.0   # outside option always available
     for t in range(T):
         while True:
             inside_mask = rng.random(J) < 0.80
-            if int(inside_mask.sum()) >= cfg.min_avail - 1:
+            if int(inside_mask.sum()) >= cfg.min_avail:
                 break
         avail_all[t, 1:] = inside_mask.astype(np.float32)
 
@@ -285,6 +291,10 @@ def simulate_dynamic_panel(
 
     # 7. Consumer-specific discount factors
     delta_true = rng.uniform(cfg.delta_min, cfg.delta_max, size=I_h).astype(np.float32)
+
+    # 7b. Consumer-specific brand tastes eta_ij (revised question item (2)):
+    # heterogeneous across consumers, homogeneous across time.
+    eta_true = rng.normal(0.0, cfg.sigma_eta, size=(I_h, J)).astype(np.float32)
 
     # 8. Per-consumer backward induction then forward simulation
     N = I_h * T
@@ -299,18 +309,19 @@ def simulate_dynamic_panel(
 
     for i in range(I_h):
         delta_i = float(delta_true[i])
+        eta_i = eta_true[i]    # (J,) consumer i's brand-specific tastes
 
         V = _backward_induction(
             T, S_max, n_items,
             avail_all, price_all, halo_effects,
-            alpha_true, xi_true,
+            alpha_true, xi_true, eta_i,
             cfg.kappa_stockout, delta_i, cfg.true_beta_price,
         )
 
         ch, inv, nxt = _forward_simulate(
             V, T, S_max, n_items,
             avail_all, price_all, halo_effects,
-            alpha_true, xi_true,
+            alpha_true, xi_true, eta_i,
             cfg.kappa_stockout, delta_i, cfg.true_beta_price,
             init_inv, rng,
         )
@@ -341,19 +352,21 @@ def simulate_dynamic_panel(
             reward[n] = abs(cfg.true_beta_price) * float(price_obs[n, j])
 
     data: Dict[str, np.ndarray] = {
-        "item_ids":       item_ids_obs.astype(np.int32),
-        "available":      avail_obs.astype(np.float32),
-        "price":          price_obs.astype(np.float32),
-        "inventory":      all_inv.astype(np.float32),
-        "choice":         all_choices.astype(np.int32),
-        "market_id":      all_market_id.astype(np.int32),
-        "reward":         reward.astype(np.float32),
-        "done":           done.astype(np.float32),
-        "next_item_ids":  item_ids_obs.astype(np.int32),
-        "next_available": next_avail.astype(np.float32),
-        "next_price":     next_price.astype(np.float32),
-        "next_market_id": next_market_id.astype(np.int32),
-        "next_inventory": all_next_inv.astype(np.float32),
+        "item_ids":          item_ids_obs.astype(np.int32),
+        "available":         avail_obs.astype(np.float32),
+        "price":             price_obs.astype(np.float32),
+        "inventory":         all_inv.astype(np.float32),
+        "choice":            all_choices.astype(np.int32),
+        "market_id":         all_market_id.astype(np.int32),
+        "household_id":      all_hh_id.astype(np.int32),
+        "reward":            reward.astype(np.float32),
+        "done":              done.astype(np.float32),
+        "next_item_ids":     item_ids_obs.astype(np.int32),
+        "next_available":    next_avail.astype(np.float32),
+        "next_price":        next_price.astype(np.float32),
+        "next_market_id":    next_market_id.astype(np.int32),
+        "next_household_id": all_hh_id.astype(np.int32),   # same consumer at t+1
+        "next_inventory":    all_next_inv.astype(np.float32),
     }
 
     meta: Dict[str, object] = {
@@ -362,6 +375,7 @@ def simulate_dynamic_panel(
         "d_true":       d_true,
         "gamma_true":   gamma_true,
         "xi_true":      xi_true,
+        "eta_true":     eta_true,        # (I, J) consumer-brand tastes
         "price_inside": price_inside,
         "avail_true":   avail_all,
         "delta_true":   delta_true,

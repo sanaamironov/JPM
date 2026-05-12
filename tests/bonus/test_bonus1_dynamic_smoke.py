@@ -55,12 +55,13 @@ class TestBonus1DGP(unittest.TestCase):
                 )
 
     def test_choice_sets_have_min_avail_brands(self):
+        # Question requirement: |A_t| >= 3 BRANDS (inside goods only).
         cfg = _small_cfg(min_avail=2)
         data, meta = simulate_dynamic_panel(cfg)
         avail = data["available"]
-        # outside option (col 0) always available; count inside brands
         inside_avail = avail[:, 1:].sum(axis=1)
-        self.assertTrue(np.all(inside_avail >= cfg.min_avail - 1))
+        self.assertTrue(np.all(inside_avail >= cfg.min_avail),
+                        msg="|A_t| must satisfy at least min_avail inside brands")
 
     def test_outside_option_always_available(self):
         cfg = _small_cfg()
@@ -93,8 +94,28 @@ class TestBonus1DGP(unittest.TestCase):
         cfg = _small_cfg()
         _, meta = simulate_dynamic_panel(cfg)
         for key in ["alpha_true", "mu_true", "d_true", "gamma_true",
-                    "xi_true", "price_inside", "avail_true", "delta_true"]:
+                    "xi_true", "eta_true", "price_inside", "avail_true",
+                    "delta_true"]:
             self.assertIn(key, meta)
+
+    def test_household_id_in_data(self):
+        cfg = _small_cfg()
+        data, _ = simulate_dynamic_panel(cfg)
+        self.assertIn("household_id", data)
+        self.assertIn("next_household_id", data)
+        # Same consumer at t and t+1
+        self.assertTrue(np.all(data["household_id"] == data["next_household_id"]))
+        # All household IDs in valid range
+        self.assertTrue(np.all(data["household_id"] >= 0))
+        self.assertTrue(np.all(data["household_id"] < cfg.num_households))
+
+    def test_eta_true_shape_and_homogeneity_over_time(self):
+        cfg = _small_cfg()
+        _, meta = simulate_dynamic_panel(cfg)
+        eta = meta["eta_true"]
+        self.assertEqual(eta.shape, (cfg.num_households, cfg.J))
+        # eta should not be all zeros (true generating distribution is N(0, sigma_eta))
+        self.assertGreater(float(np.abs(eta).mean()), 0.0)
 
     def test_gamma_true_sparsity(self):
         cfg = _small_cfg(sparse_frac=0.5)
@@ -124,7 +145,8 @@ class TestBonus1Model(unittest.TestCase):
         batch = self._batch()
         out = model(
             {k: batch[k] for k in
-             ["item_ids", "available", "price", "market_id", "inventory"]},
+             ["item_ids", "available", "price", "market_id",
+              "household_id", "inventory"]},
             training=False,
         )
         J1 = self.cfg.num_items
@@ -136,7 +158,8 @@ class TestBonus1Model(unittest.TestCase):
         batch = self._batch()
         out = model(
             {k: batch[k] for k in
-             ["item_ids", "available", "price", "market_id", "inventory"]},
+             ["item_ids", "available", "price", "market_id",
+              "household_id", "inventory"]},
             training=False,
         )
         probs = tf.exp(out["log_probs"]).numpy()
@@ -149,7 +172,27 @@ class TestBonus1Model(unittest.TestCase):
 
     def test_beta_price_is_trainable(self):
         model = DynamicContextSparseChoiceModel(self.cfg)
-        self.assertIn(model.beta_price, model.trainable_variables)
+        names = {v.name for v in model.trainable_variables}
+        self.assertTrue(any("beta_price" in n for n in names))
+
+    def test_eta_is_trainable_with_correct_shape(self):
+        model = DynamicContextSparseChoiceModel(self.cfg)
+        self.assertEqual(tuple(model.eta.shape),
+                         (self.cfg.num_households, self.cfg.J))
+        names = {v.name for v in model.trainable_variables}
+        self.assertTrue(any("eta" in n for n in names))
+        self.assertEqual(model.eta.dtype, tf.float32)
+
+    def test_static_choice_nll_works(self):
+        model = DynamicContextSparseChoiceModel(self.cfg)
+        batch = self._batch()
+        cur = {k: batch[k] for k in
+               ["item_ids", "available", "price", "market_id",
+                "household_id", "inventory", "choice"]}
+        nll = model.static_choice_nll(cur, training=False)
+        self.assertEqual(nll.dtype, tf.float32)
+        self.assertGreaterEqual(float(nll.numpy()), 0.0)
+        self.assertTrue(np.isfinite(float(nll.numpy())))
 
     def test_smoke_train_runs_and_outputs_finite(self):
         model = DynamicContextSparseChoiceModel(self.cfg)

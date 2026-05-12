@@ -46,19 +46,21 @@ def _build_map_loss_fn(
 ) -> Callable[[], tf.Tensor]:
     """Return a zero-argument callable that evaluates the MAP loss."""
     cur = {
-        "item_ids":  tensors["item_ids"],
-        "available": tensors["available"],
-        "price":     tensors["price"],
-        "market_id": tensors["market_id"],
-        "inventory": tensors["inventory"],
-        "choice":    tensors["choice"],
+        "item_ids":     tensors["item_ids"],
+        "available":    tensors["available"],
+        "price":        tensors["price"],
+        "market_id":    tensors["market_id"],
+        "household_id": tensors["household_id"],
+        "inventory":    tensors["inventory"],
+        "choice":       tensors["choice"],
     }
     nxt = {
-        "item_ids":  tensors["next_item_ids"],
-        "available": tensors["next_available"],
-        "price":     tensors["next_price"],
-        "market_id": tensors["next_market_id"],
-        "inventory": tensors["next_inventory"],
+        "item_ids":     tensors["next_item_ids"],
+        "available":    tensors["next_available"],
+        "price":        tensors["next_price"],
+        "market_id":    tensors["next_market_id"],
+        "household_id": tensors["next_household_id"],
+        "inventory":    tensors["next_inventory"],
     }
 
     def loss_fn() -> tf.Tensor:
@@ -123,8 +125,8 @@ def _hessian_diag_matrix(
     with tf.GradientTape() as t2:
         with tf.GradientTape() as t1:
             loss = loss_fn()
-        g = t1.gradient(loss, param)          # (m, n)
-    g_flat = tf.reshape(g, [-1])               # (m*n,)
+        g = t1.gradient(loss, param)          # (m, n) — inside t2 so t2 tracks it
+        g_flat = tf.reshape(g, [-1])           # (m*n,) — must also be inside t2
     H_flat = t2.jacobian(g_flat, param)        # (m*n, m, n)
     n_flat = g_flat.shape[0]
     H_sq = tf.reshape(H_flat, [n_flat, n_flat])  # (m*n, m*n)
@@ -181,10 +183,32 @@ def compute_laplace_intervals(
     tensors = {k: tf.constant(v) for k, v in data.items()}
     loss_fn = _build_map_loss_fn(model, tensors, cfg)
 
+    # ------------------------------------------------------------------
+    # Compile all Hessian computations into a single tf.function graph.
+    #
+    # The zero-argument wrapper closes over loss_fn and all model parameters.
+    # It traces exactly once and runs the double-differentiation in graph mode,
+    # satisfying the JPM constraint that all computationally intensive operations
+    # must be executable without retracing.
+    # ------------------------------------------------------------------
+    @tf.function
+    def _compute_all_hessians():
+        h_beta = _hessian_diag_scalar(loss_fn, model.beta_price)
+        h_pi   = _hessian_diag_scalar(loss_fn, model.logit_pi)
+        h_mu   = _hessian_diag_vector(loss_fn, model.mu)
+        h_d    = _hessian_diag_matrix(loss_fn, model.d)
+        return h_beta, h_pi, h_mu, h_d
+
+    h_beta_t, h_pi_t, h_mu_t, h_d_t = _compute_all_hessians()
+
+    h_beta = h_beta_t.numpy()
+    h_pi   = h_pi_t.numpy()
+    h_mu   = h_mu_t.numpy()   # (T,)
+    h_d    = h_d_t.numpy()    # (T, J)
+
     results: Dict[str, Dict[str, np.ndarray]] = {}
 
     # --- beta_price (scalar) ---
-    h_beta = _hessian_diag_scalar(loss_fn, model.beta_price).numpy()
     se_beta = _se_from_hessian_diag(np.array(h_beta))
     est_beta = float(model.beta_price.numpy())
     results["beta_price"] = {
@@ -195,7 +219,6 @@ def compute_laplace_intervals(
     }
 
     # --- logit_pi (scalar) ---
-    h_pi = _hessian_diag_scalar(loss_fn, model.logit_pi).numpy()
     se_pi = _se_from_hessian_diag(np.array(h_pi))
     est_pi = float(model.logit_pi.numpy())
     results["logit_pi"] = {
@@ -206,8 +229,7 @@ def compute_laplace_intervals(
     }
 
     # --- mu (T-vector) ---
-    h_mu = _hessian_diag_vector(loss_fn, model.mu).numpy()   # (T,)
-    se_mu = _se_from_hessian_diag(h_mu)
+    se_mu  = _se_from_hessian_diag(h_mu)
     est_mu = model.mu.numpy()
     results["mu"] = {
         "estimate": est_mu,
@@ -217,8 +239,7 @@ def compute_laplace_intervals(
     }
 
     # --- d (T×J matrix) ---
-    h_d = _hessian_diag_matrix(loss_fn, model.d).numpy()     # (T, J)
-    se_d = _se_from_hessian_diag(h_d)
+    se_d  = _se_from_hessian_diag(h_d)
     est_d = model.d.numpy()
     results["d"] = {
         "estimate": est_d,

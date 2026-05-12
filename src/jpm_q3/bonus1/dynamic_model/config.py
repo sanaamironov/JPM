@@ -26,6 +26,9 @@ class DynamicModelConfig:
     mu_true_sd: float = 1.0         # std of market-level mean shock mu_t
     d_true_sd: float = 0.8          # std of nonzero sparse deviation d_jt
 
+    # ---- Consumer-specific unobserved taste eta_ij (revised question item (2)) ----
+    sigma_eta: float = 0.5          # std of consumer-brand taste eta_ij (DGP and prior)
+
     # ---- DeepHalo backbone (Halo effect) ----
     d_embed: int = 16
     n_blocks: int = 2
