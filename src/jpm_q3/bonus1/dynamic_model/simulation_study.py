@@ -78,8 +78,13 @@ def _fit_stage(
     the value head's market_embed.
     """
     # Only keep keys consumed by the step function to minimise the input spec.
-    _step_keys = ["item_ids", "available", "price", "price_residual",
-                  "market_id", "household_id", "inventory", "choice"]
+    _step_keys = [
+        "item_ids", "available", "price", "price_residual",
+        "market_id", "household_id", "inventory", "choice",
+        "reward", "done",
+        "next_item_ids", "next_available", "next_price", "next_price_residual",
+        "next_market_id", "next_household_id", "next_inventory",
+    ]
     tensors = {k: tf.constant(data[k]) for k in _step_keys}
     ds = (
         tf.data.Dataset.from_tensor_slices(tensors)
@@ -101,27 +106,71 @@ def _fit_stage(
         "household_id":   tf.TensorSpec([None],    tf.int32),
         "inventory":      tf.TensorSpec([None],    tf.float32),
         "choice":         tf.TensorSpec([None],    tf.int32),
+        "reward":         tf.TensorSpec([None],    tf.float32),
+        "done":           tf.TensorSpec([None],    tf.float32),
+        "next_item_ids":       tf.TensorSpec([None, J], tf.int32),
+        "next_available":      tf.TensorSpec([None, J], tf.float32),
+        "next_price":          tf.TensorSpec([None, J], tf.float32),
+        "next_price_residual": tf.TensorSpec([None, J], tf.float32),
+        "next_market_id":      tf.TensorSpec([None],    tf.int32),
+        "next_household_id":   tf.TensorSpec([None],    tf.int32),
+        "next_inventory":      tf.TensorSpec([None],    tf.float32),
     }
 
     @tf.function(input_signature=[_step_sig])
     def step(batch):
+        cur = {
+            "item_ids":       batch["item_ids"],
+            "available":      batch["available"],
+            "price":          batch["price"],
+            "price_residual": batch["price_residual"],
+            "market_id":      batch["market_id"],
+            "household_id":   batch["household_id"],
+            "inventory":      batch["inventory"],
+            "choice":         batch["choice"],
+        }
+        nxt = {
+            "item_ids":       batch["next_item_ids"],
+            "available":      batch["next_available"],
+            "price":          batch["next_price"],
+            "price_residual": batch["next_price_residual"],
+            "market_id":      batch["next_market_id"],
+            "household_id":   batch["next_household_id"],
+            "inventory":      batch["next_inventory"],
+        }
         with tf.GradientTape() as tape:
-            nll = nll_fn(batch, training=True)
+            nll = nll_fn(cur, training=True)
+            td = (
+                tf.constant(0.0, dtype=tf.float32)
+                if use_static_nll
+                else model.td_error_loss(
+                    cur,
+                    nxt,
+                    reward=batch["reward"],
+                    done=batch["done"],
+                    training=True,
+                )
+            )
             prior = model.sparse_shock_prior_penalty()
-            loss = nll + float(cfg.prior_weight) * prior
+            loss = nll + float(cfg.td_weight) * td + float(cfg.prior_weight) * prior
         grads = tape.gradient(loss, train_vars)
         pairs = [(g, v) for g, v in zip(grads, train_vars) if g is not None]
         opt.apply_gradients(pairs)
-        return loss, nll
+        return loss, nll, td
 
     for ep in range(1, epochs + 1):
         m_loss = tf.keras.metrics.Mean()
         m_nll = tf.keras.metrics.Mean()
+        m_td = tf.keras.metrics.Mean()
         for batch in ds:
-            loss, nll = step(batch)
+            loss, nll, td = step(batch)
             m_loss.update_state(loss)
             m_nll.update_state(nll)
-        print(f"  {label} Epoch {ep:03d} | loss={m_loss.result():.4f}  nll={m_nll.result():.4f}")
+            m_td.update_state(td)
+        print(
+            f"  {label} Epoch {ep:03d} | loss={m_loss.result():.4f}  "
+            f"nll={m_nll.result():.4f}  td={m_td.result():.4f}"
+        )
 
 
 # ---------------------------------------------------------------------------

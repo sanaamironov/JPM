@@ -96,15 +96,18 @@ class DynamicTrainer:
         for ep in range(1, int(self.cfg.epochs) + 1):
             m_total = tf.keras.metrics.Mean()
             m_nll = tf.keras.metrics.Mean()
+            m_td = tf.keras.metrics.Mean()
             m_prior = tf.keras.metrics.Mean()
 
             for batch in ds:
                 parts = self.train_step(batch)
                 m_total.update_state(parts["total"])
                 m_nll.update_state(parts["nll"])
+                m_td.update_state(parts["td"])
                 m_prior.update_state(parts["prior"])
 
             print(
                 f"Epoch {ep:03d} | total={m_total.result():.4f} "
-                f"nll={m_nll.result():.4f} prior={m_prior.result():.4f}"
+                f"nll={m_nll.result():.4f} td={m_td.result():.4f} "
+                f"prior={m_prior.result():.4f}"
             )

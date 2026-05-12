@@ -60,6 +60,7 @@ class DynamicModelConfig:
     mu_sd: float = 3.0      # Gaussian prior std on mu_t
     center_d_within_market: bool = True
     prior_weight: float = 0.005
+    td_weight: float = 0.1  # Bellman/TD penalty weight in the dynamic MAP objective
 
     # ---- Training ----
     lr: float = 1e-3

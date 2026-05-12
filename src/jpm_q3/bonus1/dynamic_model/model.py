@@ -375,5 +375,9 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         nll = self.choice_nll(inputs, training=training)
         td = self.td_error_loss(inputs, next_inputs, reward, done, training=training)
         prior = self.sparse_shock_prior_penalty()
-        total = nll + float(self.cfg.prior_weight) * prior
+        total = (
+            nll
+            + float(self.cfg.td_weight) * td
+            + float(self.cfg.prior_weight) * prior
+        )
         return {"total": total, "nll": nll, "td": td, "prior": prior}
