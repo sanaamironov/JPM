@@ -29,36 +29,6 @@ from .intervals import compute_laplace_intervals, print_interval_summary
 from .model import DynamicContextSparseChoiceModel
 
 
-# ---------------------------------------------------------------------------
-# Two-stage trainer
-# ---------------------------------------------------------------------------
-
-def _make_stage_trainer(
-    model: DynamicContextSparseChoiceModel,
-    cfg: DynamicModelConfig,
-    train_vars: list,
-    epochs: int,
-    lr: float = 1e-3,
-) -> None:
-    """Train for `epochs` epochs updating only `train_vars`."""
-    opt = tf.keras.optimizers.Adam(learning_rate=lr)
-    tensors = None  # lazy — built on first call
-
-    def _step(batch):
-        cur = {k: batch[k] for k in
-               ["item_ids", "available", "price", "market_id", "inventory", "choice"]}
-        with tf.GradientTape() as tape:
-            nll = model.choice_nll(cur, training=True)
-            prior = model.sparse_shock_prior_penalty()
-            loss = nll + float(cfg.prior_weight) * prior
-        grads = tape.gradient(loss, train_vars)
-        pairs = [(g, v) for g, v in zip(grads, train_vars) if g is not None]
-        opt.apply_gradients(pairs)
-        return loss, nll
-
-    return _step
-
-
 def _fit_stage(
     model: DynamicContextSparseChoiceModel,
     cfg: DynamicModelConfig,
@@ -378,7 +348,6 @@ def main() -> None:
         force_cpu=True,
         seed=0,
     )
-    import os
     out = "results/bonus1/simulation_study"
     # With CF: skip if artifact already exists (pre-computed for the report).
     # To force a fresh run, delete results/bonus1/simulation_study/simulation_study.json first.

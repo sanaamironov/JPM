@@ -82,6 +82,7 @@ data/**/*.csv
 # -----------------------------------------------------------------------------
 results/**/*.csv
 results/**/*.log
+results/hybrid/zhang_lu_sparse/test_smoke_*/
 results/**/.DS_Store
 results/**/events.out.tfevents.*
 
