@@ -1,62 +1,93 @@
-# ----------------------------
-# OS / Editor junk
-# ----------------------------
+# -----------------------------------------------------------------------------
+# OS / editor noise
+# -----------------------------------------------------------------------------
 .DS_Store
+._*
 __MACOSX/
 Thumbs.db
 .vscode/
 .idea/
-docs/
+*.swp
+*.swo
+*~
 
-# ----------------------------
-# Python bytecode / caches
-# ----------------------------
+# -----------------------------------------------------------------------------
+# Local agent / assistant artifacts
+# -----------------------------------------------------------------------------
+.claude/
+.codex/
+AGENTS.md
+CLAUDE.md
+*-this-session-is-being-continued-from-a-previous-*.txt
+
+# -----------------------------------------------------------------------------
+# Python bytecode, caches, and local test artifacts
+# -----------------------------------------------------------------------------
 __pycache__/
-**/__pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pyre/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 .cache/
-CLAUDE.md
 
-
-# ----------------------------
+# -----------------------------------------------------------------------------
 # Virtual environments
-# ----------------------------
+# -----------------------------------------------------------------------------
 .venv/
 venv/
 ENV/
 env/
+.conda/
 
-# ----------------------------
+# -----------------------------------------------------------------------------
 # Packaging / build artifacts
-# ----------------------------
+# -----------------------------------------------------------------------------
 build/
 dist/
 *.egg-info/
 .eggs/
 pip-wheel-metadata/
 
-# ----------------------------
-# Notebooks (optional)
-# ----------------------------
+# -----------------------------------------------------------------------------
+# Notebooks
+# -----------------------------------------------------------------------------
 .ipynb_checkpoints/
 
-# ----------------------------
-# Data (optional - keep only if you don't want data in git)
-# ----------------------------
+# -----------------------------------------------------------------------------
+# Private/reference material and local data
+#
+# The public submission keeps Report.pdf at the repo root. The docs/ folder holds
+# prompt/reference papers and working LaTeX sources that should not be published
+# unless they are intentionally force-added.
+# -----------------------------------------------------------------------------
+docs/
 data/
-*.csv
+data/**/*.csv
 *.parquet
 *.pkl
+*.pickle
+*.feather
 
-# ----------------------------
+# -----------------------------------------------------------------------------
+# Generated experiment outputs
+#
+# Keep already tracked result summaries/figures if desired, but avoid adding
+# regenerated tables, support dumps, and logs by accident.
+# -----------------------------------------------------------------------------
+results/**/*.csv
+results/**/*.log
+results/**/.DS_Store
+results/**/events.out.tfevents.*
+
+# -----------------------------------------------------------------------------
 # TensorFlow / TFP artifacts
-# ----------------------------
+# -----------------------------------------------------------------------------
 **/tfevents.*
 **/events.out.tfevents.*
 **/checkpoint
@@ -65,8 +96,19 @@ data/
 **/saved_model/
 **/tensorboard/
 
-# ----------------------------
-# macOS Python package metadata / temp files
-# ----------------------------
-*.swp
-*.swo
+# -----------------------------------------------------------------------------
+# LaTeX build artifacts
+# -----------------------------------------------------------------------------
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
