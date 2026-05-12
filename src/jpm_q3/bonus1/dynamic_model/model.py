@@ -68,6 +68,17 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
             dtype=tf.float32,
         )
 
+        # --- Petrin & Train (2010) control function coefficient ---
+        # Absorbs the endogenous component of price via the first-stage residual
+        # ê_jt computed in `control_function.compute_price_residuals`.
+        self.lambda_control = self.add_weight(
+            name="lambda_control",
+            shape=(),
+            initializer="zeros",
+            trainable=True,
+            dtype=tf.float32,
+        )
+
         # --- Lu-style sparse shocks: inside goods only ---
         self.mu = self.add_weight(
             name="mu",
@@ -127,7 +138,10 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         self, inputs: Dict[str, tf.Tensor], training: bool
     ) -> tf.Tensor:
         """
-        u_aug = u_halo + beta_price * p_jt + 1{j>0} * (mu_t + d_jt + eta_ij)
+        u_aug = u_halo
+              + beta_price * p_jt
+              + lambda_control * price_residual_jt     (Petrin-Train control function)
+              + 1{j>0} * (mu_t + d_jt + eta_ij)
 
         Shape: (B, J+1)
         """
@@ -151,11 +165,13 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
             [tf.zeros_like(d_pad[:, :1]), tf.ones_like(d_pad[:, 1:])], axis=1
         )  # (B, J+1)
 
-        prices = tf.cast(inputs["price"], tf.float32)   # (B, J+1)
+        prices = tf.cast(inputs["price"], tf.float32)              # (B, J+1)
+        price_residual = tf.cast(inputs["price_residual"], tf.float32)  # (B, J+1)
 
         return (
             u_halo
             + self.beta_price * prices
+            + self.lambda_control * price_residual            # Petrin-Train control
             + inside_mask * mu_t[:, None]
             + d_pad
             + eta_pad

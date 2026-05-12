@@ -91,8 +91,8 @@ def _fit_stage(
     @tf.function
     def step(batch):
         cur = {k: batch[k] for k in
-               ["item_ids", "available", "price", "market_id",
-                "household_id", "inventory", "choice"]}
+               ["item_ids", "available", "price", "price_residual",
+                "market_id", "household_id", "inventory", "choice"]}
         with tf.GradientTape() as tape:
             nll = nll_fn(cur, training=True)
             prior = model.sparse_shock_prior_penalty()
@@ -170,14 +170,19 @@ def run_simulation_study(
     model.market_embed.trainable = False
     model.value_head.trainable = False
 
-    econometric_vars = [model.beta_price, model.mu, model.d, model.eta, model.logit_pi]
+    econometric_vars = [
+        model.beta_price, model.lambda_control,
+        model.mu, model.d, model.eta, model.logit_pi,
+    ]
     _fit_stage(model, cfg, data, econometric_vars,
                epochs=cfg.epochs, lr=cfg.lr, label="S1",
                use_static_nll=True)
 
-    print(f"  beta_price after Stage 1: {float(model.beta_price.numpy()):.4f}  "
+    print(f"  beta_price     after Stage 1: {float(model.beta_price.numpy()):.4f}  "
           f"(true: {cfg.true_beta_price:.3f})")
-    print(f"  std(mu) after Stage 1:    {float(tf.math.reduce_std(model.mu).numpy()):.4f}")
+    print(f"  lambda_control after Stage 1: {float(model.lambda_control.numpy()):.4f}  "
+          f"(Petrin-Train residual coef)")
+    print(f"  std(mu)        after Stage 1: {float(tf.math.reduce_std(model.mu).numpy()):.4f}")
 
     # Stage 2: Unfreeze everything, fine-tune jointly.
     print("\n[simulation_study] Stage 2: joint fine-tuning (all params)...")

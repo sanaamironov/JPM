@@ -117,6 +117,22 @@ class TestBonus1DGP(unittest.TestCase):
         # eta should not be all zeros (true generating distribution is N(0, sigma_eta))
         self.assertGreater(float(np.abs(eta).mean()), 0.0)
 
+    def test_control_function_residuals_in_data(self):
+        """Petrin & Train (2010) control function residuals must be in the data."""
+        cfg = _small_cfg()
+        data, meta = simulate_dynamic_panel(cfg)
+        # Observable cost shifter w_jt and the precomputed residual are present
+        self.assertIn("w_obs", data)
+        self.assertIn("price_residual", data)
+        self.assertIn("next_w_obs", data)
+        self.assertIn("next_price_residual", data)
+        # Outside option columns must be zero for both
+        self.assertTrue(np.all(data["w_obs"][:, 0] == 0.0))
+        self.assertTrue(np.all(data["price_residual"][:, 0] == 0.0))
+        # Inside-good residuals must have mean ~ 0 (first-stage OLS property)
+        inside_resid = meta["price_residual_inside"]
+        self.assertAlmostEqual(float(inside_resid.mean()), 0.0, places=5)
+
     def test_gamma_true_sparsity(self):
         cfg = _small_cfg(sparse_frac=0.5)
         _, meta = simulate_dynamic_panel(cfg)
@@ -145,8 +161,8 @@ class TestBonus1Model(unittest.TestCase):
         batch = self._batch()
         out = model(
             {k: batch[k] for k in
-             ["item_ids", "available", "price", "market_id",
-              "household_id", "inventory"]},
+             ["item_ids", "available", "price", "price_residual",
+              "market_id", "household_id", "inventory"]},
             training=False,
         )
         J1 = self.cfg.num_items
@@ -158,8 +174,8 @@ class TestBonus1Model(unittest.TestCase):
         batch = self._batch()
         out = model(
             {k: batch[k] for k in
-             ["item_ids", "available", "price", "market_id",
-              "household_id", "inventory"]},
+             ["item_ids", "available", "price", "price_residual",
+              "market_id", "household_id", "inventory"]},
             training=False,
         )
         probs = tf.exp(out["log_probs"]).numpy()
@@ -187,12 +203,19 @@ class TestBonus1Model(unittest.TestCase):
         model = DynamicContextSparseChoiceModel(self.cfg)
         batch = self._batch()
         cur = {k: batch[k] for k in
-               ["item_ids", "available", "price", "market_id",
-                "household_id", "inventory", "choice"]}
+               ["item_ids", "available", "price", "price_residual",
+                "market_id", "household_id", "inventory", "choice"]}
         nll = model.static_choice_nll(cur, training=False)
         self.assertEqual(nll.dtype, tf.float32)
         self.assertGreaterEqual(float(nll.numpy()), 0.0)
         self.assertTrue(np.isfinite(float(nll.numpy())))
+
+    def test_lambda_control_is_trainable(self):
+        model = DynamicContextSparseChoiceModel(self.cfg)
+        self.assertEqual(model.lambda_control.shape, ())
+        self.assertEqual(model.lambda_control.dtype, tf.float32)
+        names = {v.name for v in model.trainable_variables}
+        self.assertTrue(any("lambda_control" in n for n in names))
 
     def test_smoke_train_runs_and_outputs_finite(self):
         model = DynamicContextSparseChoiceModel(self.cfg)

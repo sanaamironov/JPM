@@ -41,12 +41,13 @@ def _compute_expected_revenue(
     for batch in ds:
         out = model(
             {
-                "item_ids":     batch["item_ids"],
-                "available":    batch["available"],
-                "price":        batch["price"],
-                "market_id":    batch["market_id"],
-                "household_id": batch["household_id"],
-                "inventory":    batch["inventory"],
+                "item_ids":       batch["item_ids"],
+                "available":      batch["available"],
+                "price":          batch["price"],
+                "price_residual": batch["price_residual"],
+                "market_id":      batch["market_id"],
+                "household_id":   batch["household_id"],
+                "inventory":      batch["inventory"],
             },
             training=False,
         )
@@ -103,12 +104,13 @@ def price_promotion_analysis(
         for batch in ds:
             out = model(
                 {
-                    "item_ids":     batch["item_ids"],
-                    "available":    batch["available"],
-                    "price":        batch["price"],
-                    "market_id":    batch["market_id"],
-                    "household_id": batch["household_id"],
-                    "inventory":    batch["inventory"],
+                    "item_ids":       batch["item_ids"],
+                    "available":      batch["available"],
+                    "price":          batch["price"],
+                    "price_residual": batch["price_residual"],
+                    "market_id":      batch["market_id"],
+                    "household_id":   batch["household_id"],
+                    "inventory":      batch["inventory"],
                 },
                 training=False,
             )

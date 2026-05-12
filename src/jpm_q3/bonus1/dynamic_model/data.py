@@ -5,6 +5,10 @@ from typing import Dict, Tuple
 import numpy as np
 
 from .config import DynamicModelConfig
+from .control_function import (
+    build_residual_array_for_training,
+    compute_price_residuals,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -257,21 +261,43 @@ def simulate_dynamic_panel(
         gamma_true[t, nz_idx] = 1
     xi_true = mu_true[:, None] + d_true   # (T, J) — for inside goods only
 
-    # 3. Brand cost shifters (fixed across time)
+    # 3. Brand cost shifters (fixed across time, unobserved to econometrician)
     c_brand = rng.uniform(0.5, 2.0, size=J).astype(np.float32)
 
-    # 4. Endogenous prices: p_jt = c_j + gamma * xi_jt + price_noise_jt (inside goods only)
+    # 3b. Observable brand-time cost shifter w_jt — exogenous instrument for the
+    # Petrin & Train (2010) control function correction of price endogeneity.
+    # Economically: brand-specific input cost shocks (e.g., commodity prices,
+    # exchange rates, supplier markups). Observable to the econometrician,
+    # excluded from utility by construction.
+    w_obs = rng.normal(0.0, cfg.sigma_w_cost, size=(T, J)).astype(np.float32)
+
+    # 4. Endogenous prices including the observable cost shifter w_jt:
+    #     p_jt = c_j + gamma * xi_jt + pi_w * w_jt + price_noise_jt
     price_noise = rng.normal(0.0, cfg.sigma_price_noise, size=(T, J)).astype(np.float32)
     price_inside = (
         c_brand[None, :]
         + cfg.gamma_endogeneity * xi_true
+        + cfg.pi_w_true * w_obs
         + price_noise
     )
-    price_inside = np.clip(price_inside, 0.1, None).astype(np.float32)  # prices are positive
+    price_inside = np.clip(price_inside, 0.1, None).astype(np.float32)
 
     # Full price array including outside option (price = 0)
     price_all = np.zeros((T, n_items), dtype=np.float32)
-    price_all[:, 1:] = price_inside   # (T, J+1), column 0 = outside = 0
+    price_all[:, 1:] = price_inside
+
+    # Full w array including outside option (w = 0)
+    w_all = np.zeros((T, n_items), dtype=np.float32)
+    w_all[:, 1:] = w_obs
+
+    # 4b. Petrin & Train (2010) control function: compute price residuals from
+    # first-stage OLS of p on [brand dummies, w, w^2]. The residual ê_jt is the
+    # part of price not explained by the exogenous instruments — it absorbs the
+    # endogenous correlation with xi_jt when used as a control in the utility.
+    price_residual_inside = compute_price_residuals(price_inside, w_obs)
+    price_residual_all = build_residual_array_for_training(
+        price_residual_inside, num_items=n_items
+    )   # (T, J+1), column 0 (outside) = 0
 
     # 5. Common choice sets A_t per time period (same across consumers).
     # Question: A_t ⊆ {1,...,J} with |A_t| ≥ 3 BRANDS (inside goods only;
@@ -335,14 +361,18 @@ def simulate_dynamic_panel(
 
     # 9. Build training arrays
     # Expand common arrays to per-observation using market_id as index
-    avail_obs = avail_all[all_market_id]       # (N, n_items)
-    price_obs = price_all[all_market_id]       # (N, n_items)
-    item_ids_obs = np.tile(item_ids_row, (N, 1))  # (N, n_items)
+    avail_obs = avail_all[all_market_id]                       # (N, n_items)
+    price_obs = price_all[all_market_id]                       # (N, n_items)
+    w_obs_obs = w_all[all_market_id]                            # (N, n_items)
+    price_residual_obs = price_residual_all[all_market_id]      # (N, n_items)
+    item_ids_obs = np.tile(item_ids_row, (N, 1))               # (N, n_items)
 
     next_market_id = np.minimum(all_market_id + 1, T - 1)
     done = (all_market_id == T - 1).astype(np.float32)
     next_avail = avail_all[next_market_id]
     next_price = price_all[next_market_id]
+    next_w = w_all[next_market_id]
+    next_price_residual = price_residual_all[next_market_id]
 
     # Reward proxy: value of purchase (|beta| * price of chosen brand)
     reward = np.zeros(N, dtype=np.float32)
@@ -352,35 +382,41 @@ def simulate_dynamic_panel(
             reward[n] = abs(cfg.true_beta_price) * float(price_obs[n, j])
 
     data: Dict[str, np.ndarray] = {
-        "item_ids":          item_ids_obs.astype(np.int32),
-        "available":         avail_obs.astype(np.float32),
-        "price":             price_obs.astype(np.float32),
-        "inventory":         all_inv.astype(np.float32),
-        "choice":            all_choices.astype(np.int32),
-        "market_id":         all_market_id.astype(np.int32),
-        "household_id":      all_hh_id.astype(np.int32),
-        "reward":            reward.astype(np.float32),
-        "done":              done.astype(np.float32),
-        "next_item_ids":     item_ids_obs.astype(np.int32),
-        "next_available":    next_avail.astype(np.float32),
-        "next_price":        next_price.astype(np.float32),
-        "next_market_id":    next_market_id.astype(np.int32),
-        "next_household_id": all_hh_id.astype(np.int32),   # same consumer at t+1
-        "next_inventory":    all_next_inv.astype(np.float32),
+        "item_ids":            item_ids_obs.astype(np.int32),
+        "available":           avail_obs.astype(np.float32),
+        "price":               price_obs.astype(np.float32),
+        "w_obs":               w_obs_obs.astype(np.float32),
+        "price_residual":      price_residual_obs.astype(np.float32),
+        "inventory":           all_inv.astype(np.float32),
+        "choice":              all_choices.astype(np.int32),
+        "market_id":           all_market_id.astype(np.int32),
+        "household_id":        all_hh_id.astype(np.int32),
+        "reward":              reward.astype(np.float32),
+        "done":                done.astype(np.float32),
+        "next_item_ids":       item_ids_obs.astype(np.int32),
+        "next_available":      next_avail.astype(np.float32),
+        "next_price":          next_price.astype(np.float32),
+        "next_w_obs":          next_w.astype(np.float32),
+        "next_price_residual": next_price_residual.astype(np.float32),
+        "next_market_id":      next_market_id.astype(np.int32),
+        "next_household_id":   all_hh_id.astype(np.int32),
+        "next_inventory":      all_next_inv.astype(np.float32),
     }
 
     meta: Dict[str, object] = {
-        "alpha_true":   alpha_true,
-        "mu_true":      mu_true,
-        "d_true":       d_true,
-        "gamma_true":   gamma_true,
-        "xi_true":      xi_true,
-        "eta_true":     eta_true,        # (I, J) consumer-brand tastes
-        "price_inside": price_inside,
-        "avail_true":   avail_all,
-        "delta_true":   delta_true,
-        "c_brand":      c_brand,
-        "halo_weights": halo_weights,   # true DeepHalo weights — NOT given to estimator
+        "alpha_true":             alpha_true,
+        "mu_true":                mu_true,
+        "d_true":                 d_true,
+        "gamma_true":             gamma_true,
+        "xi_true":                xi_true,
+        "eta_true":               eta_true,            # (I, J) consumer-brand tastes
+        "price_inside":           price_inside,
+        "w_obs":                  w_obs,                # (T, J) observable cost shifter
+        "price_residual_inside":  price_residual_inside, # (T, J) Petrin-Train residual
+        "avail_true":             avail_all,
+        "delta_true":             delta_true,
+        "c_brand":                c_brand,              # unobserved by econometrician
+        "halo_weights":           halo_weights,         # NOT given to estimator
     }
 
     return data, meta

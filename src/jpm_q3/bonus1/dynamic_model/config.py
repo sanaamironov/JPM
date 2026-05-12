@@ -13,13 +13,19 @@ class DynamicModelConfig:
 
     # ---- True DGP parameters (known to data generator, recovered by estimator) ----
     true_beta_price: float = -1.5   # true price sensitivity (negative: higher price lowers utility)
-    gamma_endogeneity: float = 0.5  # endogeneity strength: p_jt = c_j + gamma*xi_jt + noise
+    gamma_endogeneity: float = 0.5  # endogeneity strength: p_jt = c_j + gamma*xi_jt + w_jt + noise
     sigma_price_noise: float = 0.3  # std of idiosyncratic price noise eta_jt
     sigma_alpha: float = 0.5        # std of brand fixed effects alpha_j
     kappa_stockout: float = 2.0     # utility penalty for outside option when inventory = 0
     delta_min: float = 0.70         # lower bound of consumer discount factor distribution
     delta_max: float = 0.95         # upper bound of consumer discount factor distribution
     min_avail: int = 3              # minimum number of brands in each choice set A_t
+
+    # ---- Observable cost shifter w_jt for Petrin & Train (2010) control function ----
+    # w_jt enters the price equation but is excluded from utility — the IV/control
+    # function instrument that breaks the price endogeneity problem.
+    sigma_w_cost: float = 0.8       # std of observable brand-time cost shifter w_jt
+    pi_w_true: float = 1.0          # true coefficient on w_jt in the price equation
 
     # ---- Sparse market-product shock DGP ----
     sparse_frac: float = 0.30       # fraction of nonzero d_jt entries per market
@@ -40,7 +46,10 @@ class DynamicModelConfig:
     # Common discount used in estimation (approximation; true delta_i are consumer-specific).
     # Stated as a modeling assumption in the report.
     discount: float = 0.90
-    beta_price_init: float = 0.0    # initialisation for price coefficient
+    # Initialise beta_price at a negative value (a reasonable prior: higher
+    # price lowers demand). Starting at 0 leaves the optimiser in a flat
+    # local-minimum basin and prevents the control function from converging.
+    beta_price_init: float = -1.0
 
     # ---- Lu-style sparse shock prior ----
     v0: float = 0.05        # spike variance

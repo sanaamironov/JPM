@@ -46,21 +46,23 @@ def _build_map_loss_fn(
 ) -> Callable[[], tf.Tensor]:
     """Return a zero-argument callable that evaluates the MAP loss."""
     cur = {
-        "item_ids":     tensors["item_ids"],
-        "available":    tensors["available"],
-        "price":        tensors["price"],
-        "market_id":    tensors["market_id"],
-        "household_id": tensors["household_id"],
-        "inventory":    tensors["inventory"],
-        "choice":       tensors["choice"],
+        "item_ids":       tensors["item_ids"],
+        "available":      tensors["available"],
+        "price":          tensors["price"],
+        "price_residual": tensors["price_residual"],
+        "market_id":      tensors["market_id"],
+        "household_id":   tensors["household_id"],
+        "inventory":      tensors["inventory"],
+        "choice":         tensors["choice"],
     }
     nxt = {
-        "item_ids":     tensors["next_item_ids"],
-        "available":    tensors["next_available"],
-        "price":        tensors["next_price"],
-        "market_id":    tensors["next_market_id"],
-        "household_id": tensors["next_household_id"],
-        "inventory":    tensors["next_inventory"],
+        "item_ids":       tensors["next_item_ids"],
+        "available":      tensors["next_available"],
+        "price":          tensors["next_price"],
+        "price_residual": tensors["next_price_residual"],
+        "market_id":      tensors["next_market_id"],
+        "household_id":   tensors["next_household_id"],
+        "inventory":      tensors["next_inventory"],
     }
 
     def loss_fn() -> tf.Tensor:
