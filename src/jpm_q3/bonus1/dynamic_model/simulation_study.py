@@ -209,7 +209,10 @@ def run_simulation_study(
     print(f"  std(mu)        after Stage 1: {float(tf.math.reduce_std(model.mu).numpy()):.4f}")
 
     # Stage 2: Unfreeze everything, fine-tune jointly.
-    print("\n[simulation_study] Stage 2: joint fine-tuning (all params)...")
+    # Note: in TF 2.16/Keras 3, integer-index embedding lookups (halo item embedding,
+    # market_embed) receive zero gradients through @tf.function. Only value_head (MLP)
+    # and scalar/vector econometric params actually update. See CLAUDE.md for details.
+    print("\n[simulation_study] Stage 2: joint fine-tuning (value head + econometric params)...")
     model.halo.trainable = True
     model.market_embed.trainable = True
     model.value_head.trainable = True
