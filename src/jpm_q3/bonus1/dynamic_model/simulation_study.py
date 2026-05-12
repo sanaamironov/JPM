@@ -3,7 +3,8 @@ simulation_study.py — Part 3: Simulation and Parameter Recovery.
 
 Training strategy (two-stage):
   Stage 1 — econometric estimation:
-    Freeze Halo AND value head. Train only beta_price, mu, d, logit_pi.
+    Freeze Halo AND value head. Train only beta_price, lambda_control,
+    mu, d, eta, and logit_pi.
     Objective: NLL + priors only (no TD loss).
     This isolates the econometric parameters from the value function
     approximation that would otherwise compete for the same signal.

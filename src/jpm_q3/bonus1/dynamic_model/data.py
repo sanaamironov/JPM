@@ -224,7 +224,7 @@ def simulate_dynamic_panel(
     DGP assumptions (explicitly stated per the question):
     - J=cfg.J brands; item 0 is the outside option (never excluded from A_t).
     - Choice set A_t is common to all consumers at time t; |A_t| >= cfg.min_avail.
-    - Prices are endogenous: p_jt = c_j + gamma * xi_jt + eta_jt.
+    - Prices are endogenous: p_jt = c_j + gamma * xi_jt + pi_w * w_jt + nu_jt.
     - xi_jt = mu_t + d_jt where d_jt is sparse (Lu 2025 style).
     - Inventory: s in {0, ..., S_max}; fixed consumption of 1 per period (Ching 2020).
     - Each consumer has a personal discount factor delta_i ~ Uniform(delta_min, delta_max).

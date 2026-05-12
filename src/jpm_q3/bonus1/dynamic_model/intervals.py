@@ -8,7 +8,7 @@ At the MAP estimate we approximate the posterior by a Gaussian:
     p(theta | data) ≈ N(theta_hat, H^{-1})
 
 where H = d²L_MAP/dtheta² is the Hessian of the full MAP objective
-(NLL + prior terms) evaluated at theta_hat.
+(NLL + TD + prior terms) evaluated at theta_hat.
 
 We compute the diagonal of H via automatic differentiation:
   - Scalars (beta_price, logit_pi): exact d²L/dθ² via double GradientTape.
@@ -36,7 +36,7 @@ from .model import DynamicContextSparseChoiceModel
 
 
 # ---------------------------------------------------------------------------
-# MAP loss (NLL + priors) — the objective whose Hessian we compute
+# MAP loss (NLL + TD + priors) — the objective whose Hessian we compute
 # ---------------------------------------------------------------------------
 
 def _build_map_loss_fn(

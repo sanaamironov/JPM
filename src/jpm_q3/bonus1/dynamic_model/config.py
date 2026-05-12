@@ -13,8 +13,8 @@ class DynamicModelConfig:
 
     # ---- True DGP parameters (known to data generator, recovered by estimator) ----
     true_beta_price: float = -1.5   # true price sensitivity (negative: higher price lowers utility)
-    gamma_endogeneity: float = 0.5  # endogeneity strength: p_jt = c_j + gamma*xi_jt + w_jt + noise
-    sigma_price_noise: float = 0.3  # std of idiosyncratic price noise eta_jt
+    gamma_endogeneity: float = 0.5  # endogeneity strength in p_jt = c_j + gamma*xi_jt + pi_w*w_jt + noise
+    sigma_price_noise: float = 0.3  # std of idiosyncratic price noise nu_jt
     sigma_alpha: float = 0.5        # std of brand fixed effects alpha_j
     kappa_stockout: float = 2.0     # utility penalty for outside option when inventory = 0
     delta_min: float = 0.70         # lower bound of consumer discount factor distribution
