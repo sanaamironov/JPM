@@ -193,7 +193,7 @@ def compute_laplace_intervals(
     # satisfying the JPM constraint that all computationally intensive operations
     # must be executable without retracing.
     # ------------------------------------------------------------------
-    @tf.function
+    @tf.function(input_signature=[], reduce_retracing=True)
     def _compute_all_hessians():
         h_beta = _hessian_diag_scalar(loss_fn, model.beta_price)
         h_pi   = _hessian_diag_scalar(loss_fn, model.logit_pi)

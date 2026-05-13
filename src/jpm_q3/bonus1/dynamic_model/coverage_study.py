@@ -17,7 +17,8 @@ Aggregate empirical coverage rate per parameter group over the seeds.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, fields, replace
+import logging
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Dict, List
 
@@ -38,6 +39,29 @@ from .simulation_study import _fit_stage   # reuse the two-stage trainer step
 def _cfg_to_dict(cfg: DynamicModelConfig) -> Dict:
     """Serialise the config to a JSON-safe dict, ignoring @property fields."""
     return {f.name: getattr(cfg, f.name) for f in fields(cfg)}
+
+
+def _compute_intervals_for_fresh_model(
+    model: DynamicContextSparseChoiceModel,
+    data: Dict[str, np.ndarray],
+    cfg: DynamicModelConfig,
+) -> Dict:
+    """
+    Compute one graph-mode Hessian interval pass for a newly fitted model.
+
+    The coverage study deliberately fits a fresh model for every seed. Each
+    model therefore needs its own Hessian graph, which TensorFlow's global
+    frequent-tracing detector can mislabel as retracing when many seeds run in
+    one Python process. The interval helper itself still uses a zero-argument
+    tf.function with an input signature and traces once per fitted model.
+    """
+    tf_logger = tf.get_logger()
+    previous_level = tf_logger.level
+    tf_logger.setLevel(logging.ERROR)
+    try:
+        return compute_laplace_intervals(model, data, cfg, confidence=0.95)
+    finally:
+        tf_logger.setLevel(previous_level)
 
 
 def _train_two_stages(
@@ -78,7 +102,7 @@ def _evaluate_one_seed(
     cfg: DynamicModelConfig,
 ) -> Dict:
     """Compute coverage indicators and point estimates for one seed."""
-    intervals = compute_laplace_intervals(model, data, cfg, confidence=0.95)
+    intervals = _compute_intervals_for_fresh_model(model, data, cfg)
 
     # Scalar coverage: is the truth inside the CI?
     beta_lo = float(intervals["beta_price"]["ci_lower"])
@@ -97,13 +121,6 @@ def _evaluate_one_seed(
         & (meta["d_true"] <= intervals["d"]["ci_upper"])
     )
     d_coverage = float(d_in_ci.mean())
-
-    eta_in_ci = None
-    if "eta" in intervals:
-        eta_in_ci = (
-            (intervals["d"]["ci_lower"][:, :].min() <= meta["eta_true"])
-            & (meta["eta_true"] <= intervals["d"]["ci_upper"][:, :].max())
-        )
 
     # Direction (correlation) and scale metrics for mu.
     mu_hat = model.mu.numpy()
