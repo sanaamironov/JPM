@@ -195,18 +195,22 @@ def compute_laplace_intervals(
     # ------------------------------------------------------------------
     @tf.function(input_signature=[], reduce_retracing=True)
     def _compute_all_hessians():
-        h_beta = _hessian_diag_scalar(loss_fn, model.beta_price)
-        h_pi   = _hessian_diag_scalar(loss_fn, model.logit_pi)
-        h_mu   = _hessian_diag_vector(loss_fn, model.mu)
-        h_d    = _hessian_diag_matrix(loss_fn, model.d)
-        return h_beta, h_pi, h_mu, h_d
+        h_beta    = _hessian_diag_scalar(loss_fn, model.beta_price)
+        h_pi      = _hessian_diag_scalar(loss_fn, model.logit_pi)
+        h_lambda  = _hessian_diag_scalar(loss_fn, model.lambda_control)
+        h_kappa   = _hessian_diag_scalar(loss_fn, model.kappa_0)
+        h_mu      = _hessian_diag_vector(loss_fn, model.mu)
+        h_d       = _hessian_diag_matrix(loss_fn, model.d)
+        return h_beta, h_pi, h_lambda, h_kappa, h_mu, h_d
 
-    h_beta_t, h_pi_t, h_mu_t, h_d_t = _compute_all_hessians()
+    h_beta_t, h_pi_t, h_lambda_t, h_kappa_t, h_mu_t, h_d_t = _compute_all_hessians()
 
-    h_beta = h_beta_t.numpy()
-    h_pi   = h_pi_t.numpy()
-    h_mu   = h_mu_t.numpy()   # (T,)
-    h_d    = h_d_t.numpy()    # (T, J)
+    h_beta   = h_beta_t.numpy()
+    h_pi     = h_pi_t.numpy()
+    h_lambda = h_lambda_t.numpy()
+    h_kappa  = h_kappa_t.numpy()
+    h_mu     = h_mu_t.numpy()   # (T,)
+    h_d      = h_d_t.numpy()    # (T, J)
 
     results: Dict[str, Dict[str, np.ndarray]] = {}
 
@@ -220,14 +224,45 @@ def compute_laplace_intervals(
         "ci_upper": np.array(est_beta + z * float(se_beta)),
     }
 
-    # --- logit_pi (scalar) ---
+    # --- logit_pi (scalar) —
+    # Also provide CI in probability space via sigmoid transform (delta method).
     se_pi = _se_from_hessian_diag(np.array(h_pi))
-    est_pi = float(model.logit_pi.numpy())
+    est_lpi = float(model.logit_pi.numpy())
     results["logit_pi"] = {
-        "estimate": np.array(est_pi),
+        "estimate": np.array(est_lpi),
         "se":       se_pi,
-        "ci_lower": np.array(est_pi - z * float(se_pi)),
-        "ci_upper": np.array(est_pi + z * float(se_pi)),
+        "ci_lower": np.array(est_lpi - z * float(se_pi)),
+        "ci_upper": np.array(est_lpi + z * float(se_pi)),
+    }
+    # Probability-space CI (sigmoid of logit CI bounds — asymmetric but valid).
+    def _sigmoid(x: float) -> float:
+        return float(1.0 / (1.0 + np.exp(-x)))
+    est_pi_prob = _sigmoid(est_lpi)
+    results["pi"] = {
+        "estimate": np.array(est_pi_prob),
+        "se":       np.array(se_pi * est_pi_prob * (1.0 - est_pi_prob)),  # delta method
+        "ci_lower": np.array(_sigmoid(est_lpi - z * float(se_pi))),
+        "ci_upper": np.array(_sigmoid(est_lpi + z * float(se_pi))),
+    }
+
+    # --- lambda_control (scalar) ---
+    se_lambda = _se_from_hessian_diag(np.array(h_lambda))
+    est_lambda = float(model.lambda_control.numpy())
+    results["lambda_control"] = {
+        "estimate": np.array(est_lambda),
+        "se":       se_lambda,
+        "ci_lower": np.array(est_lambda - z * float(se_lambda)),
+        "ci_upper": np.array(est_lambda + z * float(se_lambda)),
+    }
+
+    # --- kappa_0 (scalar) ---
+    se_kappa = _se_from_hessian_diag(np.array(h_kappa))
+    est_kappa = float(model.kappa_0.numpy())
+    results["kappa_0"] = {
+        "estimate": np.array(est_kappa),
+        "se":       se_kappa,
+        "ci_lower": np.array(est_kappa - z * float(se_kappa)),
+        "ci_upper": np.array(est_kappa + z * float(se_kappa)),
     }
 
     # --- mu (T-vector) ---

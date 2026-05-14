@@ -77,7 +77,7 @@ def _train_two_stages(
     model.value_head.trainable = False
     econometric_vars = [
         model.beta_price, model.lambda_control,
-        model.mu, model.d, model.eta, model.logit_pi,
+        model.mu, model.d, model.eta, model.logit_pi, model.kappa_0,
     ]
     _fit_stage(
         model, cfg, data, econometric_vars,
@@ -126,12 +126,21 @@ def _evaluate_one_seed(
     mu_hat = model.mu.numpy()
     mu_corr = float(np.corrcoef(mu_hat, meta["mu_true"])[0, 1])
 
+    kappa_lo = float(intervals["kappa_0"]["ci_lower"])
+    kappa_hi = float(intervals["kappa_0"]["ci_upper"])
+    kappa_covered = bool(kappa_lo <= cfg.kappa_stockout <= kappa_hi)
+
     return {
         "beta_price_hat":   float(intervals["beta_price"]["estimate"]),
         "beta_price_se":    float(intervals["beta_price"]["se"]),
         "beta_price_ci":    [beta_lo, beta_hi],
         "beta_covered":     beta_covered,
         "lambda_control":   float(model.lambda_control.numpy()),
+        "lambda_control_se": float(intervals["lambda_control"]["se"]),
+        "kappa_0_hat":      float(intervals["kappa_0"]["estimate"]),
+        "kappa_0_se":       float(intervals["kappa_0"]["se"]),
+        "kappa_0_ci":       [kappa_lo, kappa_hi],
+        "kappa_covered":    kappa_covered,
         "mu_coverage":      mu_coverage,
         "mu_corr_true":     mu_corr,
         "mu_std_hat":       float(mu_hat.std()),
@@ -158,12 +167,12 @@ def run_coverage_study(
     rates across seeds.
     """
     if base_cfg is None:
-        # Lightweight config for tractable multi-seed runs.
+        # Full-scale config matching the simulation study DGP (T=20, I=150).
         base_cfg = DynamicModelConfig(
-            num_households=50,
-            T=10,
-            epochs=15,
-            batch_size=128,
+            num_households=150,
+            T=20,
+            epochs=30,
+            batch_size=256,
             compile_train_step=True,
             force_cpu=True,
             seed=0,
@@ -193,21 +202,24 @@ def run_coverage_study(
               f"d_cov={result['d_coverage']:.2f}")
 
     # Aggregate
-    beta_covered_rate = float(np.mean([r["beta_covered"] for r in per_seed]))
-    mu_coverage_mean = float(np.mean([r["mu_coverage"] for r in per_seed]))
-    d_coverage_mean = float(np.mean([r["d_coverage"] for r in per_seed]))
+    beta_covered_rate  = float(np.mean([r["beta_covered"]  for r in per_seed]))
+    kappa_covered_rate = float(np.mean([r["kappa_covered"] for r in per_seed]))
+    mu_coverage_mean   = float(np.mean([r["mu_coverage"]   for r in per_seed]))
+    d_coverage_mean    = float(np.mean([r["d_coverage"]    for r in per_seed]))
 
-    beta_hat_mean = float(np.mean([r["beta_price_hat"] for r in per_seed]))
-    beta_hat_std = float(np.std([r["beta_price_hat"] for r in per_seed]))
-    lambda_mean = float(np.mean([r["lambda_control"] for r in per_seed]))
-    mu_corr_mean = float(np.mean([r["mu_corr_true"] for r in per_seed]))
-    eta_rmse_mean = float(np.mean([r["eta_rmse"] for r in per_seed]))
+    beta_hat_mean  = float(np.mean([r["beta_price_hat"] for r in per_seed]))
+    beta_hat_std   = float(np.std( [r["beta_price_hat"] for r in per_seed]))
+    lambda_mean    = float(np.mean([r["lambda_control"] for r in per_seed]))
+    kappa_hat_mean = float(np.mean([r["kappa_0_hat"]    for r in per_seed]))
+    mu_corr_mean   = float(np.mean([r["mu_corr_true"]   for r in per_seed]))
+    eta_rmse_mean  = float(np.mean([r["eta_rmse"]       for r in per_seed]))
 
     summary = {
         "n_seeds": n_seeds,
         "config": _cfg_to_dict(base_cfg),
         "empirical_coverage_95": {
             "beta_price": beta_covered_rate,
+            "kappa_0":    kappa_covered_rate,
             "mu":         mu_coverage_mean,
             "d":          d_coverage_mean,
         },
@@ -215,6 +227,8 @@ def run_coverage_study(
             "beta_price_mean":     beta_hat_mean,
             "beta_price_std":      beta_hat_std,
             "beta_price_true":     base_cfg.true_beta_price,
+            "kappa_0_mean":        kappa_hat_mean,
+            "kappa_0_true":        base_cfg.kappa_stockout,
             "lambda_control_mean": lambda_mean,
             "mu_corr_true_mean":   mu_corr_mean,
             "eta_rmse_mean":       eta_rmse_mean,
@@ -225,10 +239,12 @@ def run_coverage_study(
     print("\n========== Coverage Summary ==========")
     print(f"  Seeds:                {n_seeds}")
     print(f"  beta_price coverage:  {beta_covered_rate:.2f}")
+    print(f"  kappa_0 coverage:     {kappa_covered_rate:.2f}")
     print(f"  mu coverage (mean):   {mu_coverage_mean:.2f}")
     print(f"  d coverage (mean):    {d_coverage_mean:.2f}")
     print(f"  beta_price mean:      {beta_hat_mean:.3f}  (std: {beta_hat_std:.3f})")
     print(f"  beta_price true:      {base_cfg.true_beta_price:.3f}")
+    print(f"  kappa_0 mean:         {kappa_hat_mean:.3f}  (true: {base_cfg.kappa_stockout:.3f})")
     print(f"  lambda_control mean:  {lambda_mean:.3f}")
     print(f"  corr(mu_hat, true):   {mu_corr_mean:.3f}")
     print(f"  eta RMSE mean:        {eta_rmse_mean:.3f}")
@@ -249,19 +265,19 @@ def main() -> None:
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
 
-    # Lightweight config for a 20-seed sweep.
+    # Full-scale config matching the simulation study DGP.
     base_cfg = DynamicModelConfig(
-        num_households=50,
-        T=10,
-        epochs=15,
-        batch_size=128,
+        num_households=150,
+        T=20,
+        epochs=30,
+        batch_size=256,
         compile_train_step=True,
         force_cpu=True,
         seed=0,
     )
     run_coverage_study(
         base_cfg=base_cfg,
-        n_seeds=20,
+        n_seeds=3,
         out_dir="results/bonus1/coverage_study",
     )
 

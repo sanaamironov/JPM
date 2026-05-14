@@ -215,7 +215,7 @@ def run_simulation_study(
     econometric_vars = [
         v for v in [
             model.beta_price, model.lambda_control,
-            model.mu, model.d, model.eta, model.logit_pi,
+            model.mu, model.d, model.eta, model.logit_pi, model.kappa_0,
         ] if v.trainable
     ]
     _fit_stage(model, cfg, data, econometric_vars,
@@ -283,6 +283,11 @@ def run_simulation_study(
     print(f"  mu          coverage: {mu_covered:.2f}")
     print(f"  d           coverage: {d_covered:.2f}")
 
+    # -- mu CI mean width (average 95% CI half-width across T elements) --
+    mu_ci_half_width_mean = float(np.mean(
+        intervals["mu"]["ci_upper"] - intervals["mu"]["ci_lower"]
+    ) / 2.0)
+
     summary = {
         "config": {
             "J": cfg.J, "T": cfg.T, "num_households": cfg.num_households,
@@ -292,17 +297,33 @@ def run_simulation_study(
         },
         "true": {
             "beta_price": float(cfg.true_beta_price),
+            "kappa_0": float(cfg.kappa_stockout),
             "mu_mean": float(meta["mu_true"].mean()),
             "mu_std": float(meta["mu_true"].std()),
             "gamma_true_mean": float(meta["gamma_true"].mean()),
         },
         "estimated": {
+            # beta_price
             "beta_price": float(intervals["beta_price"]["estimate"]),
             "beta_price_se": float(intervals["beta_price"]["se"]),
             "beta_price_ci": [float(intervals["beta_price"]["ci_lower"]),
                               float(intervals["beta_price"]["ci_upper"])],
-            "lambda_control": float(model.lambda_control.numpy()) if with_cf else None,
-            "pi_hat": float(tf.math.sigmoid(model.logit_pi).numpy()),
+            # lambda_control (CF coefficient)
+            "lambda_control": float(intervals["lambda_control"]["estimate"]) if with_cf else None,
+            "lambda_control_se": float(intervals["lambda_control"]["se"]) if with_cf else None,
+            "lambda_control_ci": [float(intervals["lambda_control"]["ci_lower"]),
+                                  float(intervals["lambda_control"]["ci_upper"])] if with_cf else None,
+            # pi (sparsity) — probability space
+            "pi_hat": float(intervals["pi"]["estimate"]),
+            "pi_se": float(intervals["pi"]["se"]),
+            "pi_ci": [float(intervals["pi"]["ci_lower"]),
+                      float(intervals["pi"]["ci_upper"])],
+            # kappa_0 (stockout penalty)
+            "kappa_0_hat": float(intervals["kappa_0"]["estimate"]),
+            "kappa_0_se": float(intervals["kappa_0"]["se"]),
+            "kappa_0_ci": [float(intervals["kappa_0"]["ci_lower"]),
+                           float(intervals["kappa_0"]["ci_upper"])],
+            # mu (market shocks)
             "mu_rmse": float(np.sqrt(np.mean(
                 (model.mu.numpy() - meta["mu_true"]) ** 2
             ))),
@@ -311,6 +332,8 @@ def run_simulation_study(
             )[0, 1]),
             "mu_std_hat": float(model.mu.numpy().std()),
             "mu_std_true": float(meta["mu_true"].std()),
+            "mu_ci_half_width_mean": mu_ci_half_width_mean,
+            # eta (consumer tastes)
             "eta_rmse": float(np.sqrt(np.mean(
                 (model.eta.numpy() - meta["eta_true"]) ** 2
             ))),
