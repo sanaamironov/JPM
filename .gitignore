@@ -81,6 +81,8 @@ data/**/*.csv
 # regenerated tables, support dumps, and logs by accident.
 # -----------------------------------------------------------------------------
 results/**/*.csv
+# Exceptions: canonical report-supporting CSVs are intentionally tracked
+!results/part2/lu25_section4_rep10/**/*.csv
 results/**/*.log
 results/hybrid/zhang_lu_sparse/test_smoke_*/
 results/**/.DS_Store

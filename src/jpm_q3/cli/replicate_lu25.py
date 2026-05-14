@@ -11,7 +11,7 @@ What it does:
 - Optionally runs a small smoke test via --smoke.
 - Forwards any additional arguments to the underlying runner (e.g., --R-mc, --n-reps, --seed,
   shrinkage knobs, multiprocessing knobs).
-- Prints high-level progress messages so it’s obvious the program is doing work.
+- Prints high-level progress messages so it's obvious the program is doing work.
 
 Noise control:
 - Suppresses TensorFlow INFO/WARN device logs by default (e.g., Metal device banner).
@@ -25,8 +25,6 @@ import os
 import sys
 import time
 from pathlib import Path
-
-from jpm_q3.lu25.experiments.replicate_section4 import main as lu25_main
 
 
 def _configure_tensorflow_logging() -> None:
@@ -96,6 +94,15 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Random seed for reproducibility.",
     )
+    parser.add_argument(
+        "--grid",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated subset of DGP cells to run, e.g. DGP2:25:15,DGP4:25:15. "
+            "If omitted, runs the default 4-cell grid (DGP1–4, T=25, J=15)."
+        ),
+    )
 
     args, passthrough = parser.parse_known_args(argv)
 
@@ -121,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
         lu25_args.extend(["--R-mc", str(args.R_mc)])
     if args.seed is not None and "--seed" not in passthrough:
         lu25_args.extend(["--seed", str(args.seed)])
+    if args.grid is not None and "--grid" not in passthrough:
+        lu25_args.extend(["--grid", args.grid])
 
     lu25_args.extend(passthrough)
 
@@ -130,6 +139,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[lu25] output dir: {out_dir}", file=sys.stderr)
     if args.verbose:
         print(f"[lu25] forwarded args: {' '.join(lu25_args)}", file=sys.stderr)
+
+    # Lazy import: defer heavy TF/scipy imports until after argparse so that
+    # --help exits cleanly without triggering TF device enumeration warnings.
+    from jpm_q3.lu25.experiments.replicate_section4 import main as lu25_main  # noqa: PLC0415
 
     rc = int(lu25_main(lu25_args))
 

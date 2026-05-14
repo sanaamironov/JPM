@@ -12,3 +12,6 @@ tensorflow==2.16.2; platform_system=="Darwin" and platform_machine=="arm64"
 tensorflow==2.16.2; platform_system!="Darwin" or platform_machine!="arm64"
 
 tensorflow-probability[tf]==0.24.*
+
+# Required for Part 4 hybrid (zhang_lu_sparse) — also in pyproject.toml [dev] extras
+choice-learn>=1.0.0,<2.0

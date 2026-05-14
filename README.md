@@ -8,7 +8,7 @@
 
 This repository contains my submission for the JPM MLCOE take-home assignment (Question 3: Discrete Choice + Credit Card Offers). It is organized for **reviewer reproducibility**: a single install path, a quick smoke test, and pre-computed outputs for each part.
 
-**Python 3.10 is required** (`>=3.10,<3.12`). TensorFlow 2.16.2 does not support Python 3.12+.
+**Python 3.10 is required** (`>=3.10,<3.11`). TensorFlow 2.16.2 does not support Python 3.11+.
 
 ## Reviewer Quickstart
 
@@ -95,7 +95,7 @@ Each grid cell writes:
 - `summary.csv` — long-format metrics
 - `config.json` — true parameters + metadata
 
-Pre-computed 10-rep results matching the report tables are under `results/part2/lu25_section4_rep10/`. An additional wider grid run (T=25 and T=100) is stored in `results/part2/lu25_fullgrid_10rep/` but was not used for the report.
+Pre-computed 10-rep results matching the report tables are tracked under `results/part2/lu25_section4_rep10/` (`paper_table_like.csv`, `summary.csv`, `config.json` for each DGP). An additional wider grid run (T=25 and T=100) is stored in `results/part2/lu25_fullgrid_10rep/` (config only; CSVs not tracked) but was not used for the report.
 
 ---
 
@@ -155,7 +155,7 @@ Report.pdf  # Write-up, methodology, results (66 pages)
 
 ## Troubleshooting
 
-- **Python version:** use exactly Python 3.10. TF 2.16.2 is not compatible with 3.12+.
+- **Python version:** use exactly Python 3.10. TF 2.16.2 is not compatible with 3.11+.
 - **Multiprocessing on macOS:** the replication driver uses the `spawn` start method. Always pass `--n-jobs 1` (and optionally `--threads-per-job 1`) to avoid oversubscription on Apple Silicon.
 - **TF log noise:** the CLI suppresses the TF device banner by default. Set `JPM_TF_LOG_LEVEL=0` to see full TF logs.
 - **Reproducibility issues:** the most helpful info is the full command, terminal output (stderr + stdout), Python version, and OS.

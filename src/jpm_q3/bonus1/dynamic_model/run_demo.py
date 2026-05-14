@@ -9,14 +9,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-import tensorflow as tf
-
-from .config import DynamicModelConfig
-from .counterfactual import price_promotion_analysis, print_counterfactual_summary
-from .data import simulate_dynamic_panel
-from .model import DynamicContextSparseChoiceModel
-from .simulation_study import _fit_stage
+# Heavy imports are deferred to main() so that --help exits without
+# triggering TF device enumeration or fontconfig warnings.
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -56,6 +50,15 @@ def main(argv: list[str] | None = None) -> None:
 
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
+
+    # Lazy imports: deferred past argparse so --help exits without TF noise.
+    import numpy as np  # noqa: PLC0415
+    import tensorflow as tf  # noqa: PLC0415
+    from .config import DynamicModelConfig  # noqa: PLC0415
+    from .counterfactual import price_promotion_analysis, print_counterfactual_summary  # noqa: PLC0415
+    from .data import simulate_dynamic_panel  # noqa: PLC0415
+    from .model import DynamicContextSparseChoiceModel  # noqa: PLC0415
+    from .simulation_study import _fit_stage  # noqa: PLC0415
 
     cfg = DynamicModelConfig()
 

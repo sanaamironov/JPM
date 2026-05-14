@@ -1,5 +1,3 @@
-from .config import DynamicModelConfig
-from .data import simulate_dynamic_panel
-from .model import DynamicContextSparseChoiceModel
-from .trainer import DynamicTrainer
-
+# Intentionally empty — submodules import each other directly.
+# Package-level re-exports were removed to prevent TF from loading at
+# entry-point import time, which caused warnings before --help could exit.
