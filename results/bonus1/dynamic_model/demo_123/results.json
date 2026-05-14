@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-05-12T16:02:47",
+  "timestamp": "2026-05-14T12:06:57",
   "config": {
     "J": 5,
     "T": 20,
@@ -7,22 +7,22 @@
     "true_beta_price": -1.5
   },
   "estimated": {
-    "beta_price": -0.9398624300956726,
-    "pi_hat": 0.09335252642631531,
-    "std_mu": 0.11076316982507706,
-    "mean_abs_d": 0.12878334522247314,
-    "support_sensitivity": 0.55,
-    "support_specificity": 0.525
+    "beta_price": -0.9537500143051147,
+    "pi_hat": 0.09325000643730164,
+    "std_mu": 0.11418316513299942,
+    "mean_abs_d": 0.10780579596757889,
+    "support_sensitivity": 0.3,
+    "support_specificity": 0.7
   },
   "counterfactual": {
     "brand_x": 1,
     "discount_pct": 10.0,
-    "revenue_baseline": 0.1473895149230957,
-    "revenue_promotion": 0.14866265869140624,
-    "revenue_change_abs": 0.0012731437683105307,
-    "revenue_change_pct": 0.8637953445780647,
-    "share_x_baseline": 0.1485948257446289,
-    "share_x_promotion": 0.16081761932373048,
-    "share_change_abs": 0.012222793579101582
+    "revenue_baseline": 0.14467078399658204,
+    "revenue_promotion": 0.14613668823242187,
+    "revenue_change_abs": 0.0014659042358398378,
+    "revenue_change_pct": 1.013269020415579,
+    "share_x_baseline": 0.1488993148803711,
+    "share_x_promotion": 0.1610855827331543,
+    "share_change_abs": 0.012186267852783206
   }
 }

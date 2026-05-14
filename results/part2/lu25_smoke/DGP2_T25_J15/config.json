@@ -1,0 +1,24 @@
+{
+  "dgp": "DGP2",
+  "T": 25,
+  "J": 15,
+  "true_params": {
+    "int": -1.0,
+    "sigma": 1.5,
+    "beta_p": -1.0,
+    "beta_w": 0.5
+  },
+  "timestamp": "2026-05-14_130505",
+  "n_reps": 5,
+  "R_mc": 50,
+  "shrink_n_iter": 400,
+  "shrink_burn": 200,
+  "shrink_thin": 1,
+  "shrink_v0": 0.05,
+  "shrink_v1": 1.0,
+  "shrink_a_pi": 1.0,
+  "shrink_b_pi": 9.0,
+  "shrink_beta_var": 1000000.0,
+  "shrink_beta_rw_scale": 0.05,
+  "shrink_pi_rw_scale": 0.2
+}

@@ -63,6 +63,22 @@ class TestShrinkageMCMC(unittest.TestCase):
                 delta_vec=delta, X=X, n_iter=10, burn=10
             )
 
+    def test_acceptance_rate_is_reasonable(self):
+        # A well-tuned RWM chain should neither be stuck (acc < 5%) nor
+        # trivially accepting (acc > 95%).  The defaults are validated on a
+        # problem with N=200 to give the chain enough signal to mix properly.
+        rng = np.random.default_rng(42)
+        N, k = 200, 2
+        X = rng.normal(0, 1, (N, k))
+        delta = X @ np.array([1.5, -0.8]) + rng.normal(0, 0.2, N)
+        _, _, _, acc_rate = shrinkage_fit_beta_given_sigma(
+            delta_vec=delta, X=X, n_iter=300, burn=150, seed=42
+        )
+        self.assertGreater(float(acc_rate), 0.05,
+                           msg=f"Acceptance rate {acc_rate:.3f} is too low — chain stuck")
+        self.assertLess(float(acc_rate), 0.95,
+                        msg=f"Acceptance rate {acc_rate:.3f} is too high — step size too small")
+
 
 if __name__ == "__main__":
     unittest.main()

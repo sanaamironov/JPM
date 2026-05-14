@@ -39,6 +39,10 @@ class DeepHalo(tf.keras.Model):
         ]
         self.beta = tf.keras.layers.Dense(1, use_bias=False, name="beta_final")
 
+    def build(self, input_shape=None):
+        # Sub-layers are constructed in __init__; mark as built to suppress Keras warnings.
+        super().build(input_shape or {})
+
     def call(
         self, inputs: Dict[str, tf.Tensor], training: bool = False
     ) -> Dict[str, tf.Tensor]:

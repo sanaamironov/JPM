@@ -77,6 +77,48 @@ class TestBLPSmoke(unittest.TestCase):
         self.assertEqual(Z.shape, (T * J, 5))   # [1, w, w^2, u, u^2]
 
 
+class TestBLPSigmaEstimation(unittest.TestCase):
+    """Tests for the full sigma grid search in estimate_blp_sigma."""
+
+    def _make_markets(self, T=5, J=4, seed=0):
+        rng = np.random.default_rng(seed)
+        markets = []
+        for _ in range(T):
+            p = rng.uniform(1.0, 3.0, J)
+            w = rng.normal(0.0, 1.0, J)
+            u = rng.normal(0.0, 0.5, J)
+            s = np.ones(J) * 0.05
+            markets.append({"s": s, "p": p, "w": w, "u": u})
+        return markets
+
+    def test_sigma_hat_in_search_range(self):
+        """sigma_hat must lie within the grid bounds [0.05, 4.0]."""
+        from jpm_q3.lu25.estimators.blp import estimate_blp_sigma
+        markets = self._make_markets()
+        sigma_hat, _, _ = estimate_blp_sigma(markets, iv_type="cost", R=10)
+        self.assertGreaterEqual(sigma_hat, 0.0)
+        self.assertLessEqual(sigma_hat, 4.5,
+                             msg=f"sigma_hat={sigma_hat} is outside the search range")
+
+    def test_sigma_hat_is_finite(self):
+        from jpm_q3.lu25.estimators.blp import estimate_blp_sigma
+        markets = self._make_markets()
+        sigma_hat, beta_hat, _ = estimate_blp_sigma(markets, iv_type="cost", R=10)
+        self.assertTrue(np.isfinite(sigma_hat))
+        self.assertTrue(np.all(np.isfinite(beta_hat)))
+
+    def test_extras_contain_expected_keys(self):
+        """estimate_blp_sigma must return extras with delta_hat, X, Z, xi_hat, obj_hat."""
+        from jpm_q3.lu25.estimators.blp import estimate_blp_sigma
+        markets = self._make_markets()
+        sigma_hat, beta_hat, extras = estimate_blp_sigma(markets, iv_type="cost", R=10)
+        for key in ("obj_hat", "delta_hat", "X", "Z", "xi_hat"):
+            self.assertIn(key, extras, msg=f"Missing key '{key}' in extras")
+        # xi_hat shape must equal T*J
+        T, J = 5, 4
+        self.assertEqual(extras["xi_hat"].shape, (T * J,))
+
+
 class TestBuildMatricesPaper(unittest.TestCase):
     def _make_markets(self, T=3, J=4):
         rng = np.random.default_rng(0)

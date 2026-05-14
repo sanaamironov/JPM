@@ -120,6 +120,10 @@ class ZhangSparseDeepHalo(tf.keras.Model):
             tf.zeros([self.T, self.J_inside], dtype=tf.float32), name="d"
         )
 
+    def build(self, input_shape=None):
+        # Sub-layers are constructed in __init__; mark as built to suppress Keras warnings.
+        super().build(input_shape or {})
+
     def call(
         self, inputs: Dict[str, tf.Tensor], training: bool = False
     ) -> Dict[str, tf.Tensor]:
@@ -658,7 +662,11 @@ def run_experiment(
         stage2_epochs=cfg.epochs,
     )
 
-    d_hat = full_model.d.numpy()
+    d_raw = full_model.d.numpy()  # (T, J_inside) — stored before centering
+    if cfg.center_d_within_market:
+        d_hat = d_raw - d_raw.mean(axis=1, keepdims=True)
+    else:
+        d_hat = d_raw
     gamma_true = meta["gamma_true"]
     support_rows = compute_support_metrics(d_hat, gamma_true, taus)
 

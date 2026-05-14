@@ -16,7 +16,8 @@ class DynamicModelConfig:
     gamma_endogeneity: float = 0.5  # endogeneity strength in p_jt = c_j + gamma*xi_jt + pi_w*w_jt + noise
     sigma_price_noise: float = 0.3  # std of idiosyncratic price noise nu_jt
     sigma_alpha: float = 0.5        # std of brand fixed effects alpha_j
-    kappa_stockout: float = 2.0     # utility penalty for outside option when inventory = 0
+    kappa_stockout: float = 2.0     # utility penalty for outside option when inventory = 0 (DGP)
+    kappa_stockout_init: float = 1.0  # estimator initial value for kappa_0 (intentionally offset from truth)
     delta_min: float = 0.70         # lower bound of consumer discount factor distribution
     delta_max: float = 0.95         # upper bound of consumer discount factor distribution
     min_avail: int = 3              # minimum number of brands in each choice set A_t

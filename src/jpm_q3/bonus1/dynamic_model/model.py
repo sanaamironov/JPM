@@ -105,6 +105,18 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
             dtype=tf.float32,
         )
 
+        # --- Stockout penalty kappa_0: penalty on outside option when inventory == 0 ---
+        # The DGP generates u_i0t(s) = -kappa_0 * 1{s=0}. This term is state-dependent
+        # and cannot be absorbed by the static Halo embedding for item 0, so it must
+        # be estimated explicitly. Initialised at kappa_stockout_init (positive, below truth).
+        self.kappa_0 = self.add_weight(
+            name="kappa_0",
+            shape=(),
+            initializer=tf.keras.initializers.Constant(cfg.kappa_stockout_init),
+            trainable=True,
+            dtype=tf.float32,
+        )
+
         # Sparsity inclusion probability (logit scale)
         pi0 = float(cfg.a_pi / (cfg.a_pi + cfg.b_pi))
         pi0 = min(max(pi0, 1e-6), 1.0 - 1e-6)
@@ -168,6 +180,15 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         prices = tf.cast(inputs["price"], tf.float32)              # (B, J+1)
         price_residual = tf.cast(inputs["price_residual"], tf.float32)  # (B, J+1)
 
+        # Stockout penalty: -kappa_0 * 1{s=0} applied only to outside option (j=0).
+        inv = tf.cast(inputs["inventory"], tf.float32)   # (B,)
+        stockout = tf.cast(inv < 0.5, tf.float32)        # (B,) — 1 when s == 0
+        # Shape (B, J+1): kappa_0 penalty on column 0 only
+        kappa_col = tf.concat(
+            [stockout[:, None], tf.zeros([tf.shape(u_halo)[0], self.cfg.J], dtype=tf.float32)],
+            axis=1,
+        )
+
         return (
             u_halo
             + self.beta_price * prices
@@ -175,6 +196,7 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
             + inside_mask * mu_t[:, None]
             + d_pad
             + eta_pad
+            - self.kappa_0 * kappa_col                        # stockout penalty on outside option
         )
 
     def _value_from(
