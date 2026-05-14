@@ -8,6 +8,8 @@
 
 This repository contains my submission for the JPM MLCOE take-home assignment (Question 3: Discrete Choice + Credit Card Offers). It is organized for **reviewer reproducibility**: a single install path, a quick smoke test, and pre-computed outputs for each part.
 
+The final write-up is **`Report.pdf` at the repository root**.
+
 **Python 3.10 is required** (`>=3.10,<3.11`). TensorFlow 2.16.2 does not support Python 3.11+.
 
 ## Reviewer Quickstart
@@ -28,6 +30,7 @@ python -m pip install -e ".[dev]"
 
 # Run all tests (107 tests, ~60 s)
 pytest -q
+# Expected: 107 passed, with 2 TensorFlow Probability deprecation warnings
 
 # Part 2 smoke run (all DGPs, ~5 min)
 jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke --n-jobs 1
@@ -42,12 +45,24 @@ python -m pip install -e ".[dev]"
 
 # Run all tests (107 tests, ~60 s)
 pytest -q
+# Expected: 107 passed, with 2 TensorFlow Probability deprecation warnings
 
 # Part 2 smoke run
 jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke --n-jobs 1
 ```
 
 > **Note:** On Linux/Windows `tensorflow==2.16.2` is installed automatically from PyPI. On non-Apple macOS Intel you may need to install `tensorflow-macos` manually (same as Option A).
+
+### Minimal reviewer checklist
+
+```bash
+python -m pip install -e ".[dev]"
+pytest -q
+jpmq3-replicate-lu25 --help
+jpmq3-run-bonus1 --help
+```
+
+The two pytest warnings are expected deprecation warnings emitted by TensorFlow Probability's dependency-version check (`distutils.version`) under Python 3.10; they are not warnings from this repository's code.
 
 ## What this submission contains
 
@@ -95,7 +110,7 @@ Each grid cell writes:
 - `summary.csv` — long-format metrics
 - `config.json` — true parameters + metadata
 
-Pre-computed 10-rep results matching the report tables are tracked under `results/part2/lu25_section4_rep10/` (`paper_table_like.csv`, `summary.csv`, `config.json` for each DGP). An additional wider grid run (T=25 and T=100) is stored in `results/part2/lu25_fullgrid_10rep/` (config only; CSVs not tracked) but was not used for the report.
+Pre-computed 10-rep results matching the report tables are provided under `results/part2/lu25_section4_rep10/` (`paper_table_like.csv`, `summary.csv`, `config.json` for each DGP).
 
 ---
 
@@ -117,6 +132,9 @@ jpmq3-run-bonus1
 
 # Simulation study (parameter recovery, ~10 min)
 python -m jpm_q3.bonus1.dynamic_model.simulation_study
+
+# Coverage study at the report scale
+python -m jpm_q3.bonus1.dynamic_model.coverage_study
 ```
 
 Results pre-computed under `results/bonus1/`.
