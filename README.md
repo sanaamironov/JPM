@@ -95,7 +95,7 @@ Each grid cell writes:
 - `summary.csv` — long-format metrics
 - `config.json` — true parameters + metadata
 
-Pre-computed 10-rep results are under `results/part2/lu25_fullgrid_10rep/`.
+Pre-computed 10-rep results matching the report tables are under `results/part2/lu25_section4_rep10/`. An additional wider grid run (T=25 and T=100) is stored in `results/part2/lu25_fullgrid_10rep/` but was not used for the report.
 
 ---
 

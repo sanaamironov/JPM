@@ -72,6 +72,30 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print extra wrapper-level progress messages.",
     )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=None,
+        help="Number of parallel jobs for the replication grid (default: 1 on macOS to avoid oversubscription).",
+    )
+    parser.add_argument(
+        "--n-reps",
+        type=int,
+        default=None,
+        help="Number of Monte Carlo replications per DGP cell.",
+    )
+    parser.add_argument(
+        "--R-mc",
+        type=int,
+        default=None,
+        help="Number of Monte Carlo draws for BLP share simulation.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility.",
+    )
 
     args, passthrough = parser.parse_known_args(argv)
 
@@ -88,6 +112,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.smoke and "--smoke" not in passthrough:
         lu25_args.append("--smoke")
+
+    if args.n_jobs is not None and "--n-jobs" not in passthrough:
+        lu25_args.extend(["--n-jobs", str(args.n_jobs)])
+    if args.n_reps is not None and "--n-reps" not in passthrough:
+        lu25_args.extend(["--n-reps", str(args.n_reps)])
+    if args.R_mc is not None and "--R-mc" not in passthrough:
+        lu25_args.extend(["--R-mc", str(args.R_mc)])
+    if args.seed is not None and "--seed" not in passthrough:
+        lu25_args.extend(["--seed", str(args.seed)])
 
     lu25_args.extend(passthrough)
 

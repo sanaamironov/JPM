@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -17,11 +19,53 @@ from .model import DynamicContextSparseChoiceModel
 from .simulation_study import _fit_stage
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="Run the Bonus 1 dynamic storable-goods demo (synthetic DGP).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run a very fast smoke pass (fewer epochs, smaller DGP).",
+    )
+    p.add_argument(
+        "--out",
+        type=str,
+        default=None,
+        help="Output directory. Defaults to results/bonus1/dynamic_model/demo_<seed>.",
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed (overrides config default).",
+    )
+    p.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Training epochs for Stage 1 (overrides config default).",
+    )
+    return p
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
 
     cfg = DynamicModelConfig()
+
+    if args.seed is not None:
+        cfg.seed = args.seed
+    if args.epochs is not None:
+        cfg.epochs = args.epochs
+    if args.smoke:
+        cfg.num_households = max(50, cfg.num_households // 4)
+        cfg.epochs = min(cfg.epochs, 5)
 
     if cfg.force_cpu:
         try:
@@ -113,7 +157,7 @@ def main() -> None:
         "counterfactual": cf,
     }
 
-    out_dir = Path("results/bonus1/dynamic_model") / f"demo_{cfg.seed}"
+    out_dir = Path(args.out) if args.out else Path("results/bonus1/dynamic_model") / f"demo_{cfg.seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "results.json").write_text(
         json.dumps(payload, indent=2), encoding="utf-8"
