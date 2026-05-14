@@ -177,3 +177,6 @@ Report.pdf  # Write-up, methodology, results (66 pages)
 - **Multiprocessing on macOS:** the replication driver uses the `spawn` start method. Always pass `--n-jobs 1` (and optionally `--threads-per-job 1`) to avoid oversubscription on Apple Silicon.
 - **TF log noise:** the CLI suppresses the TF device banner by default. Set `JPM_TF_LOG_LEVEL=0` to see full TF logs.
 - **Reproducibility issues:** the most helpful info is the full command, terminal output (stderr + stdout), Python version, and OS.
+
+## AI Assistance Disclosure
+The assignment email encouraged use of AI tools. I used Claude Opus and ChatGPT/Codex to build on my existing implementation, learn unfamiliar concepts, speed up debugging, address reviewer feedback, improve tests, and review the final submission. I reviewed and take responsibility for the final code, results, and report.
