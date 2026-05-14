@@ -148,3 +148,4 @@ Report.pdf  # Write-up, methodology, results
 - **Multiprocessing on macOS:** the replication driver uses the `spawn` start method. With `--n-jobs > 1`, also set `--threads-per-job=1` to avoid oversubscription.
 - **TF log noise:** the CLI suppresses the TF device banner by default. Set `JPM_TF_LOG_LEVEL=0` to see full TF logs.
 - **Reproducibility issues:** the most helpful info is the full command, terminal output (stderr + stdout), Python version, and OS.
+
