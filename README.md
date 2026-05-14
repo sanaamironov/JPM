@@ -8,6 +8,8 @@
 
 This repository contains my submission for the JPM MLCOE take-home assignment (Question 3: Discrete Choice + Credit Card Offers). It is organized for **reviewer reproducibility**: a single install path, a quick smoke test, and pre-computed outputs for each part.
 
+**Python 3.10 is required** (`>=3.10,<3.12`). TensorFlow 2.16.2 does not support Python 3.12+.
+
 ## Reviewer Quickstart
 
 ### Option A — macOS Apple Silicon (tested end-to-end)
@@ -18,34 +20,40 @@ conda create -n jpm-clean python=3.10 -y
 conda activate jpm-clean
 python -m pip install -U pip
 
-# TensorFlow stack (Apple Silicon)
+# TensorFlow stack (Apple Silicon — must install before the package)
 python -m pip install "tensorflow-macos==2.16.2" "tensorflow==2.16.2" "tensorflow-probability[tf]==0.24.*"
 
 # Install package + dev deps
 python -m pip install -e ".[dev]"
 
-# Run all tests
+# Run all tests (107 tests, ~60 s)
+pytest -q
+
+# Part 2 smoke run (all DGPs, ~5 min)
+jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke --n-jobs 1
+```
+
+### Option B — Linux / Windows / non-Apple macOS (Python 3.10 venv)
+
+```bash
+python3.10 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m pip install -U pip
+python -m pip install -e ".[dev]"
+
+# Run all tests (107 tests, ~60 s)
 pytest -q
 
 # Part 2 smoke run
-jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke
+jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke --n-jobs 1
 ```
 
-### Option B — generic Python venv
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -e ".[dev]"
-pytest -q
-jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke
-```
+> **Note:** On Linux/Windows `tensorflow==2.16.2` is installed automatically from PyPI. On non-Apple macOS Intel you may need to install `tensorflow-macos` manually (same as Option A).
 
 ## What this submission contains
 
 ### Part 1 — DeepHalo (Zhang 2025)
 
-Context-dependent choice model implemented in TensorFlow/Keras under `src/choice_learn_ext/models/deep_context/`. The model captures halo effects via attention-style masking and runs natively in Keras graph mode (`model.compile` + `model.fit`).
+Context-dependent choice model implemented in TensorFlow/Keras under `src/choice_learn_ext/models/deep_context/`. Captures halo effects via masked context aggregation and runs natively in Keras graph mode (`model.compile` + `model.fit`).
 
 ```bash
 # Install plotting extra (needed for figure output)
@@ -64,11 +72,11 @@ Outputs write to `results/part1/<run_name>/`. Figures go under `results/part1/<r
 
 ### Part 2 — BLP + MCMC Shrinkage (Lu & Shimizu 2025)
 
-Replication of the Section 4 simulation study: BLP contraction mapping + TFP `RandomWalkMetropolis` on a collapsed spike-and-slab model.
+Approximate reimplementation of the Section 4 simulation study: BLP contraction mapping + TFP `RandomWalkMetropolis` on a collapsed spike-and-slab model.
 
 ```bash
-# Smoke run (all DGP/T/J grid cells, 1 rep each)
-jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke
+# Smoke run (all 4 DGPs at T=25 J=15, 5 reps each, ~5 min)
+jpmq3-replicate-lu25 --smoke --out results/part2/lu25_smoke --n-jobs 1
 
 # Single cell, more reps
 jpmq3-replicate-lu25 \
@@ -87,6 +95,8 @@ Each grid cell writes:
 - `summary.csv` — long-format metrics
 - `config.json` — true parameters + metadata
 
+Pre-computed 10-rep results are under `results/part2/lu25_fullgrid_10rep/`.
+
 ---
 
 ### Part 4 — Zhang-Sparse Hybrid
@@ -99,13 +109,13 @@ Results pre-computed under `results/hybrid/zhang_lu_sparse/`.
 
 ### Bonus 1 — Dynamic Storable Goods (Ching 2020)
 
-Dynamic discrete choice model with stockpiling and strategic pricing. Consumers solve exact backward induction (pure numpy DGP); estimation uses a neural continuation-value approximation in TF graph mode. Includes a simulation study with parameter recovery and credible intervals.
+Dynamic discrete choice model with stockpiling and endogenous prices. Consumers solve exact backward induction (pure NumPy DGP); estimation uses a neural continuation-value approximation in TF graph mode with a Petrin & Train (2010) control function for price endogeneity. Includes a simulation study with parameter recovery and Laplace credible intervals.
 
 ```bash
-# Demo run
+# Demo run (fits model, runs counterfactual, saves to results/bonus1/dynamic_model/)
 jpmq3-run-bonus1
 
-# Simulation study (parameter recovery)
+# Simulation study (parameter recovery, ~10 min)
 python -m jpm_q3.bonus1.dynamic_model.simulation_study
 ```
 
@@ -136,16 +146,16 @@ src/
     hybrid/                # Part 4: Zhang-Sparse hybrid
     bonus1/dynamic_model/  # Bonus 1: dynamic storable goods model
 tests/
-  part1/    # DeepHalo unit tests
+  part1/    # DeepHalo unit tests (masking, equivariance, graph mode, dtype, NLL)
   part2/    # BLP, shrinkage, hybrid tests
-  bonus/    # Bonus 1 DGP, model, counterfactual tests
+  bonus/    # Bonus 1 DGP, model, training, counterfactual, coverage tests
 results/    # Pre-computed outputs (kept for reviewer convenience)
-Report.pdf  # Write-up, methodology, results
+Report.pdf  # Write-up, methodology, results (66 pages)
 ```
 
 ## Troubleshooting
 
-- **Multiprocessing on macOS:** the replication driver uses the `spawn` start method. With `--n-jobs > 1`, also set `--threads-per-job=1` to avoid oversubscription.
+- **Python version:** use exactly Python 3.10. TF 2.16.2 is not compatible with 3.12+.
+- **Multiprocessing on macOS:** the replication driver uses the `spawn` start method. Always pass `--n-jobs 1` (and optionally `--threads-per-job 1`) to avoid oversubscription on Apple Silicon.
 - **TF log noise:** the CLI suppresses the TF device banner by default. Set `JPM_TF_LOG_LEVEL=0` to see full TF logs.
 - **Reproducibility issues:** the most helpful info is the full command, terminal output (stderr + stdout), Python version, and OS.
-
