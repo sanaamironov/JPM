@@ -8,7 +8,7 @@
     "beta_p": -1.0,
     "beta_w": 0.5
   },
-  "timestamp": "2026-05-14_133308",
+  "timestamp": "2026-05-14_135824",
   "n_reps": 5,
   "R_mc": 50,
   "shrink_n_iter": 400,
