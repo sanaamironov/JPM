@@ -268,7 +268,16 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
         v_next_flat = self._value_from(market_rep, inv_next_flat, training=training)
         v_next = tf.reshape(v_next_flat, [B, n_items])          # (B, J+1)
 
-        u_dyn = u_aug + float(self.cfg.discount) * v_next
+        # Enforce terminal condition V[T, s] = 0: zero continuation for last period.
+        is_terminal = tf.cast(market_id >= self.cfg.T - 1, tf.float32)[:, None]  # (B, 1)
+        v_next = v_next * (1.0 - is_terminal)
+
+        # Per-consumer discount when provided; fall back to shared cfg.discount.
+        if "delta_i" in inputs:
+            delta = tf.cast(inputs["delta_i"], tf.float32)[:, None]   # (B, 1)
+        else:
+            delta = float(self.cfg.discount)
+        u_dyn = u_aug + delta * v_next
 
         # Availability masking
         avail = tf.cast(inputs["available"], tf.float32)
@@ -323,7 +332,11 @@ class DynamicContextSparseChoiceModel(tf.keras.Model):
     ) -> tf.Tensor:
         v = self.call(inputs, training=training)["value"]
         v_next = self.call(next_inputs, training=False)["value"]
-        target = tf.cast(reward, tf.float32) + float(self.cfg.discount) * (
+        if "delta_i" in inputs:
+            delta = tf.cast(inputs["delta_i"], tf.float32)
+        else:
+            delta = float(self.cfg.discount)
+        target = tf.cast(reward, tf.float32) + delta * (
             1.0 - tf.cast(done, tf.float32)
         ) * tf.stop_gradient(v_next)
         return tf.reduce_mean(tf.square(v - target))

@@ -374,12 +374,12 @@ def simulate_dynamic_panel(
     next_w = w_all[next_market_id]
     next_price_residual = price_residual_all[next_market_id]
 
-    # Reward proxy: value of purchase (|beta| * price of chosen brand)
-    reward = np.zeros(N, dtype=np.float32)
-    for n in range(N):
-        j = int(all_choices[n])
-        if j > 0:
-            reward[n] = abs(cfg.true_beta_price) * float(price_obs[n, j])
+    # Reward proxy: binary purchase indicator (1 if inside good chosen, 0 for outside).
+    # Using a unit signal avoids circularity with the unknown true beta_price.
+    reward = (all_choices > 0).astype(np.float32)
+
+    # Per-observation discount factor (indexed by household).
+    all_delta_i = delta_true[all_hh_id].astype(np.float32)   # (N,)
 
     data: Dict[str, np.ndarray] = {
         "item_ids":            item_ids_obs.astype(np.int32),
@@ -393,6 +393,7 @@ def simulate_dynamic_panel(
         "household_id":        all_hh_id.astype(np.int32),
         "reward":              reward.astype(np.float32),
         "done":                done.astype(np.float32),
+        "delta_i":             all_delta_i,
         "next_item_ids":       item_ids_obs.astype(np.int32),
         "next_available":      next_avail.astype(np.float32),
         "next_price":          next_price.astype(np.float32),

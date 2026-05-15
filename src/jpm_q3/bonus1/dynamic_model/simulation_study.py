@@ -52,7 +52,7 @@ def _fit_stage(
     _step_keys = [
         "item_ids", "available", "price", "price_residual",
         "market_id", "household_id", "inventory", "choice",
-        "reward", "done",
+        "reward", "done", "delta_i",
         "next_item_ids", "next_available", "next_price", "next_price_residual",
         "next_market_id", "next_household_id", "next_inventory",
     ]
@@ -79,6 +79,7 @@ def _fit_stage(
         "choice":         tf.TensorSpec([None],    tf.int32),
         "reward":         tf.TensorSpec([None],    tf.float32),
         "done":           tf.TensorSpec([None],    tf.float32),
+        "delta_i":        tf.TensorSpec([None],    tf.float32),
         "next_item_ids":       tf.TensorSpec([None, J], tf.int32),
         "next_available":      tf.TensorSpec([None, J], tf.float32),
         "next_price":          tf.TensorSpec([None, J], tf.float32),
@@ -99,6 +100,7 @@ def _fit_stage(
             "household_id":   batch["household_id"],
             "inventory":      batch["inventory"],
             "choice":         batch["choice"],
+            "delta_i":        batch["delta_i"],
         }
         nxt = {
             "item_ids":       batch["next_item_ids"],
@@ -108,6 +110,7 @@ def _fit_stage(
             "market_id":      batch["next_market_id"],
             "household_id":   batch["next_household_id"],
             "inventory":      batch["next_inventory"],
+            "delta_i":        batch["delta_i"],   # same household, same discount
         }
         with tf.GradientTape() as tape:
             nll = nll_fn(cur, training=True)
@@ -375,12 +378,33 @@ def main() -> None:
     # With CF: skip if artifact already exists (pre-computed for the report).
     # To force a fresh run, delete results/bonus1/simulation_study/simulation_study.json first.
     if not os.path.exists(os.path.join(out, "simulation_study.json")):
-        run_simulation_study(cfg, out_dir=out, with_cf=True)
+        cf_summary = run_simulation_study(cfg, out_dir=out, with_cf=True)
     else:
         print("[main] simulation_study.json already exists — skipping with-CF run.")
         print("       Delete it and re-run to regenerate.")
+        import json as _json
+        cf_summary = _json.loads(
+            open(os.path.join(out, "simulation_study.json")).read()
+        )
     # Without CF: always produces simulation_study_no_cf.json (Table 3 baseline).
-    run_simulation_study(cfg, out_dir=out, with_cf=False)
+    no_cf_summary = run_simulation_study(cfg, out_dir=out, with_cf=False)
+
+    # Report the correct bias-reduction fraction (not the recovery fraction).
+    beta_cf    = cf_summary["estimated"]["beta_price"]
+    beta_no_cf = no_cf_summary["estimated"]["beta_price"]
+    beta_true  = cfg.true_beta_price
+    gap_no_cf  = abs(beta_true) - abs(beta_no_cf)   # bias without CF
+    bias_removed = abs(beta_cf) - abs(beta_no_cf)   # improvement due to CF
+    if abs(gap_no_cf) > 1e-8:
+        bias_reduction_pct = 100.0 * bias_removed / gap_no_cf
+    else:
+        bias_reduction_pct = float("nan")
+    recovery_pct = 100.0 * abs(beta_cf) / abs(beta_true)
+    print("\n[main] CF comparison:")
+    print(f"  beta_true        = {beta_true:.3f}")
+    print(f"  beta without CF  = {beta_no_cf:.3f}  (recovery {100*abs(beta_no_cf)/abs(beta_true):.1f}%)")
+    print(f"  beta with CF     = {beta_cf:.3f}  (recovery {recovery_pct:.1f}%)")
+    print(f"  Bias reduction   = {bias_reduction_pct:.1f}%  (= improvement / gap-without-CF)")
 
 
 if __name__ == "__main__":

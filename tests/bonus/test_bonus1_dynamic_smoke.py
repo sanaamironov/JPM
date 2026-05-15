@@ -266,6 +266,60 @@ class TestBonus1Model(unittest.TestCase):
         trainer.fit(data)
         self.assertTrue(np.isfinite(float(model.beta_price.numpy())))
 
+    def test_compiled_train_step_does_not_retrace(self):
+        """A second call to fit() must not add new concrete functions.
+
+        input_signature=[_sig] with None batch dims guarantees that varying
+        batch sizes across epochs never retrace. This test verifies the JPM
+        no-retracing constraint: once traced, the graph is reused indefinitely.
+        """
+        cfg = _small_cfg(compile_train_step=True, epochs=1)
+        data, _ = simulate_dynamic_panel(cfg)
+        model = DynamicContextSparseChoiceModel(cfg)
+        trainer = DynamicTrainer(model, cfg)
+        trainer.fit(data)   # first fit: traces the function
+
+        fn = trainer._train_step_fn
+        if not hasattr(fn, "_list_all_concrete_functions"):
+            self.skipTest("TF version does not expose _list_all_concrete_functions")
+
+        count_after_first_fit = len(fn._list_all_concrete_functions())
+
+        # A second fit with the same data must not increase the concrete function count.
+        trainer.fit(data)
+        count_after_second_fit = len(fn._list_all_concrete_functions())
+
+        self.assertEqual(
+            count_after_first_fit, count_after_second_fit,
+            msg=(f"Retracing detected: concrete function count went from "
+                 f"{count_after_first_fit} to {count_after_second_fit} on second fit"),
+        )
+
+    def test_terminal_period_continuation_is_zero(self):
+        """V[T, s] = 0 must be enforced: for last-period observations the
+        dynamic NLL must equal the static NLL (no continuation contribution).
+        """
+        cfg = _small_cfg()
+        data, _ = simulate_dynamic_panel(cfg)
+        model = DynamicContextSparseChoiceModel(cfg)
+
+        last_t_mask = data["market_id"] == cfg.T - 1
+        self.assertTrue(last_t_mask.any(), "No last-period observations in data")
+
+        batch = {k: tf.constant(v[last_t_mask]) for k, v in data.items()}
+        inputs = {k: batch[k] for k in
+                  ["item_ids", "available", "price", "price_residual",
+                   "market_id", "household_id", "inventory", "choice", "delta_i"]}
+
+        # With terminal V zeroed, u_dyn = u_aug + delta*0 = u_aug,
+        # so dynamic and static NLL must agree exactly.
+        static_nll  = float(model.static_choice_nll(inputs,  training=False).numpy())
+        dynamic_nll = float(model.choice_nll(inputs, training=False).numpy())
+        self.assertAlmostEqual(
+            static_nll, dynamic_nll, places=5,
+            msg="Terminal period: dynamic NLL != static NLL (V[T,s]=0 not enforced)",
+        )
+
 
 class TestBonus1CoverageStudy(unittest.TestCase):
     def setUp(self):
@@ -332,13 +386,14 @@ class TestBonus1Counterfactual(unittest.TestCase):
             batch["price"] = tf.constant(prices)
             out = model(
                 {
-                    "item_ids": batch["item_ids"],
-                    "available": batch["available"],
-                    "price": batch["price"],
+                    "item_ids":       batch["item_ids"],
+                    "available":      batch["available"],
+                    "price":          batch["price"],
                     "price_residual": batch["price_residual"],
-                    "market_id": batch["market_id"],
-                    "household_id": batch["household_id"],
-                    "inventory": batch["inventory"],
+                    "market_id":      batch["market_id"],
+                    "household_id":   batch["household_id"],
+                    "inventory":      batch["inventory"],
+                    "delta_i":        batch["delta_i"],
                 },
                 training=False,
             )

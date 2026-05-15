@@ -277,7 +277,7 @@ def main() -> None:
     )
     run_coverage_study(
         base_cfg=base_cfg,
-        n_seeds=3,
+        n_seeds=20,
         out_dir="results/bonus1/coverage_study",
     )
 

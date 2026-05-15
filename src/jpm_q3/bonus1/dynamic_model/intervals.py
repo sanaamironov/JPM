@@ -26,7 +26,7 @@ All operations are graph-mode compatible.
 """
 from __future__ import annotations
 
-from typing import Callable, Dict
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 import tensorflow as tf
@@ -43,8 +43,8 @@ def _build_map_loss_fn(
     model: DynamicContextSparseChoiceModel,
     tensors: Dict[str, tf.Tensor],
     cfg: DynamicModelConfig,
-) -> Callable[[], tf.Tensor]:
-    """Return a zero-argument callable that evaluates the MAP loss."""
+) -> Tuple[Callable[[], tf.Tensor], Dict[str, tf.Tensor]]:
+    """Return (loss_fn, cur) where loss_fn evaluates the MAP loss and cur holds current-step tensors."""
     cur = {
         "item_ids":       tensors["item_ids"],
         "available":      tensors["available"],
@@ -54,6 +54,7 @@ def _build_map_loss_fn(
         "household_id":   tensors["household_id"],
         "inventory":      tensors["inventory"],
         "choice":         tensors["choice"],
+        "delta_i":        tensors["delta_i"],
     }
     nxt = {
         "item_ids":       tensors["next_item_ids"],
@@ -63,6 +64,7 @@ def _build_map_loss_fn(
         "market_id":      tensors["next_market_id"],
         "household_id":   tensors["next_household_id"],
         "inventory":      tensors["next_inventory"],
+        "delta_i":        tensors["delta_i"],
     }
 
     def loss_fn() -> tf.Tensor:
@@ -75,7 +77,7 @@ def _build_map_loss_fn(
         )
         return parts["total"]
 
-    return loss_fn
+    return loss_fn, cur
 
 
 # ---------------------------------------------------------------------------
@@ -140,15 +142,63 @@ def _hessian_diag_matrix(
 # SE and CI from Hessian diagonal
 # ---------------------------------------------------------------------------
 
-def _se_from_hessian_diag(h_diag: np.ndarray, floor: float = 1e-6) -> np.ndarray:
-    """
-    SE = 1 / sqrt(max(|H_ii|, floor)).
+_IDENTIFICATION_THRESHOLD = 0.01  # |H_ii| must exceed this to be well-identified
+# SE = 1/sqrt(0.01) = 10; intervals wider than ±10 signal near-flat MAP loss.
 
-    The floor prevents division by zero when a parameter is poorly identified.
-    A floor of 1e-6 gives SE ≤ 1000, which is honest about poor identification
-    rather than producing the infinite SEs of the Fisher approximation.
+
+def _se_from_hessian_diag(
+    h_diag: np.ndarray,
+    floor: float = 1e-6,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    return 1.0 / np.sqrt(np.maximum(np.abs(h_diag), floor))
+    Return (SE, well_identified) for each element of h_diag.
+
+    SE = 1 / sqrt(max(|H_ii|, floor)).
+    well_identified[i] = True iff |H_ii| >= _IDENTIFICATION_THRESHOLD.
+
+    A parameter is flagged as poorly identified when |H_ii| < 0.01, meaning the
+    MAP loss is nearly flat in that direction and the Laplace interval is too wide
+    to be informative (SE > 10 for |beta_price| ~ 1.5).
+    """
+    h_abs = np.abs(h_diag)
+    se = 1.0 / np.sqrt(np.maximum(h_abs, floor))
+    well_identified = h_abs >= _IDENTIFICATION_THRESHOLD
+    return se, well_identified
+
+
+def _eta_fisher_diag(
+    model: DynamicContextSparseChoiceModel,
+    cur: Dict[str, tf.Tensor],
+    cfg: DynamicModelConfig,
+) -> np.ndarray:
+    """
+    Diagonal of the MAP Hessian for eta_ij via the Fisher identity + prior curvature.
+
+    For a softmax model:  H_ij = F_ij + 1/sigma_eta²
+    where F_ij = Σ_{n: household=i} p_j(n) * (1 - p_j(n))
+
+    This avoids the O(I²J²) cost of tf.jacobian for the full (I,J) matrix by
+    using a single forward pass and numpy groupby — O(N*J) overall.
+    """
+    # Forward pass to get probabilities (inside goods only, columns 1..J).
+    out = model(
+        {k: cur[k] for k in
+         ["item_ids", "available", "price", "price_residual",
+          "market_id", "household_id", "inventory", "delta_i"]},
+        training=False,
+    )
+    probs = tf.exp(out["log_probs"]).numpy()   # (N, J+1)
+    hh_ids = cur["household_id"].numpy()       # (N,)
+
+    I, J = cfg.num_households, cfg.J
+    fisher = np.zeros((I, J), dtype=np.float64)
+    p_inside = probs[:, 1:]   # (N, J) — inside goods
+    # Accumulate per-household Fisher diagonal
+    np.add.at(fisher, hh_ids, p_inside * (1.0 - p_inside))
+
+    # Add prior curvature 1/sigma_eta² (from Gaussian prior on eta_ij)
+    prior_curv = 1.0 / (float(cfg.sigma_eta) ** 2)
+    return (fisher + prior_curv).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -165,16 +215,18 @@ def compute_laplace_intervals(
     Compute Laplace credible intervals for key model parameters.
 
     Parameters of interest:
-        beta_price  — scalar price coefficient
-        logit_pi    — scalar sparsity logit
-        mu          — (T,) market mean shocks
-        d           — (T, J) sparse deviations
+        beta_price     — scalar price coefficient
+        logit_pi       — scalar sparsity logit
+        mu             — (T,) market mean shocks
+        d              — (T, J) sparse deviations
+        eta            — (I, J) consumer-brand tastes (Fisher-based diagonal)
 
     Returns a dict keyed by parameter name, each containing:
-        estimate  : numpy array  (MAP estimate)
-        se        : numpy array  (standard error = 1/sqrt(|H_ii|))
-        ci_lower  : numpy array  (lower credible bound)
-        ci_upper  : numpy array  (upper credible bound)
+        estimate        : numpy array  (MAP estimate)
+        se              : numpy array  (standard error = 1/sqrt(|H_ii|))
+        ci_lower        : numpy array  (lower credible bound)
+        ci_upper        : numpy array  (upper credible bound)
+        well_identified : bool or bool array  (True iff |H_ii| >= 0.01)
     """
     z = float(
         tf.math.erfinv(tf.constant(confidence, tf.float32)).numpy() * np.sqrt(2)
@@ -183,7 +235,7 @@ def compute_laplace_intervals(
     # Subsample data for Hessian computation — full data is expensive but correct.
     # Use all data (N ≤ ~3000 is fine for this model size).
     tensors = {k: tf.constant(v) for k, v in data.items()}
-    loss_fn = _build_map_loss_fn(model, tensors, cfg)
+    loss_fn, cur = _build_map_loss_fn(model, tensors, cfg)
 
     # ------------------------------------------------------------------
     # Compile all Hessian computations into a single tf.function graph.
@@ -215,74 +267,94 @@ def compute_laplace_intervals(
     results: Dict[str, Dict[str, np.ndarray]] = {}
 
     # --- beta_price (scalar) ---
-    se_beta = _se_from_hessian_diag(np.array(h_beta))
+    se_beta, id_beta = _se_from_hessian_diag(np.array(h_beta))
     est_beta = float(model.beta_price.numpy())
     results["beta_price"] = {
-        "estimate": np.array(est_beta),
-        "se":       se_beta,
-        "ci_lower": np.array(est_beta - z * float(se_beta)),
-        "ci_upper": np.array(est_beta + z * float(se_beta)),
+        "estimate":        np.array(est_beta),
+        "se":              se_beta,
+        "ci_lower":        np.array(est_beta - z * float(se_beta)),
+        "ci_upper":        np.array(est_beta + z * float(se_beta)),
+        "well_identified": bool(id_beta),
     }
 
     # --- logit_pi (scalar) —
     # Also provide CI in probability space via sigmoid transform (delta method).
-    se_pi = _se_from_hessian_diag(np.array(h_pi))
+    se_pi, id_pi = _se_from_hessian_diag(np.array(h_pi))
     est_lpi = float(model.logit_pi.numpy())
     results["logit_pi"] = {
-        "estimate": np.array(est_lpi),
-        "se":       se_pi,
-        "ci_lower": np.array(est_lpi - z * float(se_pi)),
-        "ci_upper": np.array(est_lpi + z * float(se_pi)),
+        "estimate":        np.array(est_lpi),
+        "se":              se_pi,
+        "ci_lower":        np.array(est_lpi - z * float(se_pi)),
+        "ci_upper":        np.array(est_lpi + z * float(se_pi)),
+        "well_identified": bool(id_pi),
     }
     # Probability-space CI (sigmoid of logit CI bounds — asymmetric but valid).
     def _sigmoid(x: float) -> float:
         return float(1.0 / (1.0 + np.exp(-x)))
     est_pi_prob = _sigmoid(est_lpi)
     results["pi"] = {
-        "estimate": np.array(est_pi_prob),
-        "se":       np.array(se_pi * est_pi_prob * (1.0 - est_pi_prob)),  # delta method
-        "ci_lower": np.array(_sigmoid(est_lpi - z * float(se_pi))),
-        "ci_upper": np.array(_sigmoid(est_lpi + z * float(se_pi))),
+        "estimate":        np.array(est_pi_prob),
+        "se":              np.array(se_pi * est_pi_prob * (1.0 - est_pi_prob)),
+        "ci_lower":        np.array(_sigmoid(est_lpi - z * float(se_pi))),
+        "ci_upper":        np.array(_sigmoid(est_lpi + z * float(se_pi))),
+        "well_identified": bool(id_pi),
     }
 
     # --- lambda_control (scalar) ---
-    se_lambda = _se_from_hessian_diag(np.array(h_lambda))
+    se_lambda, id_lambda = _se_from_hessian_diag(np.array(h_lambda))
     est_lambda = float(model.lambda_control.numpy())
     results["lambda_control"] = {
-        "estimate": np.array(est_lambda),
-        "se":       se_lambda,
-        "ci_lower": np.array(est_lambda - z * float(se_lambda)),
-        "ci_upper": np.array(est_lambda + z * float(se_lambda)),
+        "estimate":        np.array(est_lambda),
+        "se":              se_lambda,
+        "ci_lower":        np.array(est_lambda - z * float(se_lambda)),
+        "ci_upper":        np.array(est_lambda + z * float(se_lambda)),
+        "well_identified": bool(id_lambda),
     }
 
     # --- kappa_0 (scalar) ---
-    se_kappa = _se_from_hessian_diag(np.array(h_kappa))
+    se_kappa, id_kappa = _se_from_hessian_diag(np.array(h_kappa))
     est_kappa = float(model.kappa_0.numpy())
     results["kappa_0"] = {
-        "estimate": np.array(est_kappa),
-        "se":       se_kappa,
-        "ci_lower": np.array(est_kappa - z * float(se_kappa)),
-        "ci_upper": np.array(est_kappa + z * float(se_kappa)),
+        "estimate":        np.array(est_kappa),
+        "se":              se_kappa,
+        "ci_lower":        np.array(est_kappa - z * float(se_kappa)),
+        "ci_upper":        np.array(est_kappa + z * float(se_kappa)),
+        "well_identified": bool(id_kappa),
     }
 
     # --- mu (T-vector) ---
-    se_mu  = _se_from_hessian_diag(h_mu)
+    se_mu, id_mu = _se_from_hessian_diag(h_mu)
     est_mu = model.mu.numpy()
     results["mu"] = {
-        "estimate": est_mu,
-        "se":       se_mu,
-        "ci_lower": est_mu - z * se_mu,
-        "ci_upper": est_mu + z * se_mu,
+        "estimate":        est_mu,
+        "se":              se_mu,
+        "ci_lower":        est_mu - z * se_mu,
+        "ci_upper":        est_mu + z * se_mu,
+        "well_identified": id_mu,   # (T,) boolean array
     }
 
     # --- d (T×J matrix) ---
-    se_d  = _se_from_hessian_diag(h_d)
+    se_d, id_d = _se_from_hessian_diag(h_d)
     est_d = model.d.numpy()
     results["d"] = {
-        "estimate": est_d,
-        "se":       se_d,
-        "ci_lower": est_d - z * se_d,
-        "ci_upper": est_d + z * se_d,
+        "estimate":        est_d,
+        "se":              se_d,
+        "ci_lower":        est_d - z * se_d,
+        "ci_upper":        est_d + z * se_d,
+        "well_identified": id_d,    # (T, J) boolean array
+    }
+
+    # --- eta (I×J matrix) — Fisher-based diagonal Hessian (single forward pass) ---
+    # Uses the softmax Fisher identity: H_ij = Σ_{n:hh=i} p_j(n)*(1-p_j(n)) + 1/σ_eta²
+    h_eta = _eta_fisher_diag(model, cur, cfg)   # (I, J)
+    se_eta, id_eta = _se_from_hessian_diag(h_eta)
+    est_eta = model.eta.numpy()
+    results["eta"] = {
+        "estimate":        est_eta,
+        "se":              se_eta,
+        "ci_lower":        est_eta - z * se_eta,
+        "ci_upper":        est_eta + z * se_eta,
+        "well_identified": id_eta,  # (I, J) boolean array
     }
 
     return results
@@ -293,8 +365,8 @@ def print_interval_summary(
     meta: Dict | None = None,
 ) -> None:
     """Print a concise table of estimates and credible intervals."""
-    print(f"\n{'Parameter':<18} {'True':>8} {'Estimate':>10} {'SE':>8} {'95% CI':>22}")
-    print("-" * 72)
+    print(f"\n{'Parameter':<18} {'True':>8} {'Estimate':>10} {'SE':>8} {'95% CI':>22} {'ID?':>5}")
+    print("-" * 79)
 
     def _row(name: str, true_val: float | None, r: Dict) -> None:
         est = float(np.mean(r["estimate"]))
@@ -302,7 +374,15 @@ def print_interval_summary(
         lo = float(np.mean(r["ci_lower"]))
         hi = float(np.mean(r["ci_upper"]))
         true_str = f"{true_val:8.3f}" if true_val is not None else "       —"
-        print(f"{name:<18} {true_str} {est:10.3f} {se:8.3f} [{lo:8.3f}, {hi:8.3f}]")
+        wi = r.get("well_identified")
+        if wi is None:
+            id_str = "  ?"
+        elif np.ndim(wi) == 0:
+            id_str = "  Y" if bool(wi) else "  N"
+        else:
+            pct = float(np.mean(wi)) * 100
+            id_str = f"{pct:3.0f}%"
+        print(f"{name:<18} {true_str} {est:10.3f} {se:8.3f} [{lo:8.3f}, {hi:8.3f}] {id_str}")
 
     true_beta = float(meta.get("true_beta_price", float("nan"))) if meta else None
     _row("beta_price", true_beta, results["beta_price"])
@@ -323,5 +403,6 @@ def print_interval_summary(
         tv = float(mu_true[t]) if mu_true is not None else None
         _row(f"mu[{t}]", tv, {k: results["mu"][k][t:t+1] for k in results["mu"]})
 
-    print("-" * 72)
-    print("(Intervals use exact MAP Hessian diagonal via automatic differentiation)")
+    print("-" * 79)
+    print("(ID? = well-identified: |H_ii| >= 0.01; N = near-flat MAP, intervals uninformative)")
+    print("(Intervals: exact MAP Hessian diagonal for scalars/mu/d; Fisher diagonal for eta)")

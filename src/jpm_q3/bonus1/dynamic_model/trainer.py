@@ -30,6 +30,7 @@ class DynamicTrainer:
             "choice":              tf.TensorSpec([None],    tf.int32),
             "reward":              tf.TensorSpec([None],    tf.float32),
             "done":                tf.TensorSpec([None],    tf.float32),
+            "delta_i":             tf.TensorSpec([None],    tf.float32),
             "next_item_ids":       tf.TensorSpec([None, J], tf.int32),
             "next_available":      tf.TensorSpec([None, J], tf.float32),
             "next_price":          tf.TensorSpec([None, J], tf.float32),
@@ -55,6 +56,7 @@ class DynamicTrainer:
             "household_id":   batch["household_id"],
             "inventory":      batch["inventory"],
             "choice":         batch["choice"],
+            "delta_i":        batch["delta_i"],
         }
         nxt = {
             "item_ids":       batch["next_item_ids"],
@@ -64,6 +66,7 @@ class DynamicTrainer:
             "market_id":      batch["next_market_id"],
             "household_id":   batch["next_household_id"],
             "inventory":      batch["next_inventory"],
+            "delta_i":        batch["delta_i"],   # same household, same discount
         }
         with tf.GradientTape() as tape:
             parts = self.model.compute_loss(

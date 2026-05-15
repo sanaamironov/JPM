@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> None:
     model.value_head.trainable = False
     econometric_vars = [
         model.beta_price, model.lambda_control,
-        model.mu, model.d, model.eta, model.logit_pi,
+        model.mu, model.d, model.eta, model.logit_pi, model.kappa_0,
     ]
     _fit_stage(model, cfg, data, econometric_vars,
                epochs=cfg.epochs, lr=cfg.lr, label="S1", use_static_nll=True)

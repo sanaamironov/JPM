@@ -111,6 +111,7 @@ def price_promotion_analysis(
                     "market_id":      batch["market_id"],
                     "household_id":   batch["household_id"],
                     "inventory":      batch["inventory"],
+                    "delta_i":        batch["delta_i"],
                 },
                 training=False,
             )
